@@ -23,6 +23,7 @@ services:
       - ./storage:/var/www/octomind/storage
       - ./database:/var/www/octomind/database
       - bot-repositories:/var/www/octomind/storage/app/repositories
+      - bot-ssh-keys:/var/www/octomind/storage/app/ssh
     networks:
       - octomind-network
     depends_on:
@@ -128,6 +129,7 @@ services:
       - ./:/var/www/octomind
       - ./storage:/var/www/octomind/storage
       - bot-repositories:/var/www/octomind/storage/app/repositories
+      - bot-ssh-keys:/var/www/octomind/storage/app/ssh
     networks:
       - octomind-network
     depends_on:
@@ -207,6 +209,8 @@ volumes:
   grafana-data:
     driver: local
   bot-repositories:
+    driver: local
+  bot-ssh-keys:
     driver: local
 
 networks:

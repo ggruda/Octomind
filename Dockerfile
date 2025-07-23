@@ -14,6 +14,7 @@ RUN apk add --no-cache \
     nodejs \
     npm \
     supervisor \
+    openssh-client \
     && docker-php-ext-install pdo pdo_sqlite pcntl \
     && rm -rf /var/cache/apk/*
 

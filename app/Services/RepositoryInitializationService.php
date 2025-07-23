@@ -11,12 +11,14 @@ class RepositoryInitializationService
     private ConfigService $config;
     private LogService $logger;
     private ProviderManager $providerManager;
+    private SSHKeyManagementService $sshManager;
 
     public function __construct()
     {
         $this->config = ConfigService::getInstance();
         $this->logger = new LogService();
         $this->providerManager = new ProviderManager();
+        $this->sshManager = new SSHKeyManagementService();
     }
 
     /**
@@ -30,19 +32,22 @@ class RepositoryInitializationService
         ]);
 
         try {
-            // 1. Repository-Informationen validieren
+            // 1. SSH-Keys initialisieren falls nötig
+            $this->ensureSSHKeysConfigured();
+            
+            // 2. Repository-Informationen validieren
             $repoInfo = $this->validateRepositoryUrl($ticket->repositoryUrl);
             
-            // 2. Lokales Arbeitsverzeichnis erstellen
+            // 3. Lokales Arbeitsverzeichnis erstellen
             $workspacePath = $this->createWorkspace($repoInfo);
             
-            // 3. Repository klonen oder initialisieren
+            // 4. Repository klonen oder initialisieren
             $cloneResult = $this->cloneOrInitializeRepository($repoInfo, $workspacePath);
             
-            // 4. Basis-Struktur und Konfiguration prüfen/erstellen
+            // 5. Basis-Struktur und Konfiguration prüfen/erstellen
             $setupResult = $this->setupRepositoryStructure($workspacePath, $repoInfo);
             
-            // 5. Git-Konfiguration einrichten
+            // 6. Git-Konfiguration einrichten
             $this->configureGit($workspacePath);
             
             $this->logger->info('Repository erfolgreich initialisiert', [
@@ -72,6 +77,39 @@ class RepositoryInitializationService
                 'workspace_path' => null
             ];
         }
+    }
+
+    /**
+     * Stellt sicher, dass SSH-Keys konfiguriert sind
+     */
+    private function ensureSSHKeysConfigured(): void
+    {
+        if (!$this->sshManager->isConfigured()) {
+            $this->logger->info('SSH-Keys nicht konfiguriert, initialisiere...');
+            
+            $result = $this->sshManager->initializeSSHKeys();
+            
+            if (!$result['success']) {
+                throw new Exception('SSH-Key-Initialisierung fehlgeschlagen: ' . $result['error']);
+            }
+
+            if ($result['action'] === 'generated') {
+                $this->logger->warning('⚠️  NEUE SSH-KEYS GENERIERT! Bitte Deploy Keys zu den Repositories hinzufügen:', [
+                    'public_key' => $result['public_key'],
+                    'fingerprint' => $result['fingerprint']
+                ]);
+                
+                // Deployment-Anweisungen loggen
+                foreach ($result['instructions'] as $provider => $instructions) {
+                    $this->logger->info("📋 {$instructions['title']}:", [
+                        'steps' => $instructions['steps']
+                    ]);
+                }
+            }
+        }
+
+        // Git für SSH konfigurieren
+        $this->sshManager->configureGitForSSH();
     }
 
     /**
@@ -201,24 +239,25 @@ class RepositoryInitializationService
             'path' => $workspacePath
         ]);
 
-        // GitHub Token für Authentifizierung verwenden
-        $token = $this->config->get('auth.github_token');
-        $authenticatedUrl = str_replace(
-            'https://github.com',
-            "https://{$token}@github.com",
-            $repoInfo['clone_url']
-        );
-
+        // SSH-URL für sicheres Klonen verwenden
+        $sshUrl = $this->sshManager->convertToSSHUrl($repoInfo['clone_url']);
+        
         $parentDir = dirname($workspacePath);
         $repoName = basename($workspacePath);
 
-        // Git clone ausführen
-        $command = "cd {$parentDir} && git clone {$authenticatedUrl} {$repoName}";
+        // Git clone mit SSH ausführen
+        $sshCommand = "ssh -i {$this->sshManager->getStatus()['private_key_path']} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null";
+        $command = "cd {$parentDir} && GIT_SSH_COMMAND=\"{$sshCommand}\" git clone {$sshUrl} {$repoName}";
         $output = shell_exec($command . ' 2>&1');
 
         if (!File::exists($workspacePath . '/.git')) {
             throw new Exception("Git clone fehlgeschlagen: {$output}");
         }
+
+        $this->logger->info('Repository erfolgreich geklont via SSH', [
+            'ssh_url' => $sshUrl,
+            'path' => $workspacePath
+        ]);
 
         return $output;
     }
