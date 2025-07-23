@@ -50,7 +50,7 @@ class ConfigService
             'jira' => [
                 'project_key' => env('JIRA_PROJECT_KEY'),
                 'fetch_interval' => env('JIRA_FETCH_INTERVAL', 300), // 5 minutes
-                'required_label' => env('BOT_JIRA_REQUIRED_LABEL', 'ai-bot'),
+                'required_label' => env('BOT_JIRA_REQUIRED_LABEL', 'octomind'),
                 'require_unassigned' => env('BOT_JIRA_REQUIRE_UNASSIGNED', true),
                 'allowed_statuses' => explode(',', env('BOT_JIRA_ALLOWED_STATUSES', 'Open,In Progress,To Do')),
             ],
@@ -216,4 +216,4 @@ class ConfigService
     {
         $this->loadConfiguration();
     }
-} 
+}

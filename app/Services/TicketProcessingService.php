@@ -4,8 +4,12 @@ namespace App\Services;
 
 use App\DTOs\TicketDTO;
 use App\Models\Ticket;
+use App\Models\Project;
+use App\Models\Repository;
 use App\Services\KnowledgeBaseService;
 use App\Services\CodeReviewService;
+use App\Services\ProjectService;
+use App\Services\RepositoryService;
 use Carbon\Carbon;
 use Exception;
 
@@ -20,6 +24,8 @@ class TicketProcessingService
     private KnowledgeBaseService $knowledgeBase;
     private CodeReviewService $codeReview;
     private RepositoryInitializationService $repoInit;
+    private ProjectService $projectService;
+    private RepositoryService $repositoryService;
 
     public function __construct()
     {
@@ -32,6 +38,8 @@ class TicketProcessingService
         $this->knowledgeBase = new KnowledgeBaseService();
         $this->codeReview = new CodeReviewService();
         $this->repoInit = new RepositoryInitializationService();
+        $this->projectService = new ProjectService();
+        $this->repositoryService = new RepositoryService();
     }
 
     /**
@@ -54,167 +62,213 @@ class TicketProcessingService
             // 2. Processing starten und Status setzen
             $ticketModel->startProcessing();
             
-            // 3. Repository initialisieren falls erstes Ticket
-            $this->ensureRepositoryInitialized($ticketDTO);
+            // 3. Projekt und Repository aus DB auflösen
+            $this->resolveProjectAndRepository($ticketModel, $ticketDTO);
             
-            // 4. IMMER neuen Branch erstellen
-            $this->ensureCleanBranch($ticketDTO);
+            // 4. Repository initialisieren/synchronisieren
+            $this->ensureRepositoryReady($ticketModel->repository);
             
-            // 5. Knowledge-Base aktualisieren
+            // 5. IMMER neuen Branch erstellen
+            $this->ensureCleanBranch($ticketDTO, $ticketModel->repository);
+            
+            // 6. Knowledge-Base aktualisieren
             $knowledgeBase = $this->knowledgeBase->updateKnowledgeBase($ticketDTO);
             
-            // 6. Erweiterten Prompt mit Projekt-Kontext erstellen
-            $prompt = $this->buildEnhancedPrompt($ticketDTO, $knowledgeBase);
+            // 7. Erweiterten Prompt mit Projekt-Kontext erstellen
+            $prompt = $this->buildEnhancedPrompt($ticketDTO, $knowledgeBase, $ticketModel->repository);
             
-            // 7. AI-Lösung generieren
+            // 8. AI-Lösung generieren
             $aiSolution = $this->aiService->generateSolution($prompt);
             
             if (!$aiSolution['success']) {
                 throw new Exception('AI-Lösungsgenerierung fehlgeschlagen: ' . $aiSolution['error']);
             }
             
-            // 8. Code-Änderungen ausführen
+            // 9. Code-Änderungen ausführen
             $executionResult = $this->aiService->executeCode($ticketDTO, $aiSolution);
             
             if (!$executionResult['success']) {
                 throw new Exception('Code-Ausführung fehlgeschlagen: ' . $executionResult['error']);
             }
             
-            // 9. Code-Review durchführen
+            // 10. Code-Review durchführen
             $reviewResult = $this->codeReview->performCodeReview($ticketDTO, $executionResult['changes']);
             
-            if ($reviewResult['approval_status'] !== 'approved') {
-                // Bei nicht-approvierten Changes: Verbesserungen anfordern
-                $improvedResult = $this->handleCodeReviewFeedback($ticketDTO, $reviewResult, $executionResult);
-                if ($improvedResult) {
-                    $executionResult = $improvedResult;
-                }
-            }
+            // 11. Commit und Push
+            $commitResult = $this->commitAndPushChanges($ticketDTO, $executionResult, $ticketModel->repository);
             
-            // 9. Pull Request erstellen
-            $prResult = $this->githubService->createPullRequest($ticketDTO, $executionResult);
+            // 12. Pull Request erstellen
+            $prResult = $this->createPullRequest($ticketDTO, $commitResult, $ticketModel->repository);
             
-            if (!$prResult['success']) {
-                throw new Exception('PR-Erstellung fehlgeschlagen: ' . $prResult['error']);
-            }
+            // 13. Jira-Ticket aktualisieren
+            $this->updateJiraTicket($ticketDTO, $prResult);
             
-            // 10. Processing abschließen
-            $endTime = Carbon::now();
-            $duration = $startTime->diffInSeconds($endTime);
+            // 14. Ticket als erfolgreich markieren
+            $processingTime = Carbon::now()->diffInSeconds($startTime);
+            $ticketModel->markCompleted($processingTime, $prResult['pr_url'], $prResult['pr_number'], $commitResult['commit_hash']);
             
-            $ticketModel->completeProcessing([
-                'branch' => $prResult['branch'],
+            // 15. Projekt-Statistiken aktualisieren
+            $this->projectService->updateTicketStats($ticketModel->project, true);
+            
+            // 16. Repository-Statistiken aktualisieren
+            $this->repositoryService->updateCommitStats($ticketModel->repository, $commitResult['commit_hash']);
+            $this->repositoryService->updatePRStats($ticketModel->repository);
+
+            $this->logger->info('Ticket-Verarbeitung erfolgreich abgeschlossen', [
+                'ticket_key' => $ticketKey,
+                'processing_time' => $processingTime,
                 'pr_url' => $prResult['pr_url'],
-                'pr_number' => $prResult['pr_number'],
-                'commit_hash' => $prResult['commit_hash'],
-                'ai_provider' => $aiSolution['provider_used'] ?? 'unknown'
+                'project' => $ticketModel->project->jira_key,
+                'repository' => $ticketModel->repository->full_name
             ]);
-            
-            // 11. Jira-Ticket aktualisieren mit Zeiterfassung und Kommentaren
-            $this->updateJiraTicket($ticketDTO, $prResult, $duration, $reviewResult);
-            
-            $result = [
+
+            return [
                 'success' => true,
                 'ticket_key' => $ticketKey,
-                'processing_time_seconds' => $duration,
-                'processing_time_formatted' => $this->formatDuration($duration),
+                'processing_time' => $processingTime,
                 'pr_url' => $prResult['pr_url'],
                 'pr_number' => $prResult['pr_number'],
-                'branch' => $prResult['branch'],
-                'code_review_score' => $reviewResult['overall_score'] ?? 0,
-                'ai_provider' => $aiSolution['provider_used'] ?? 'unknown',
-                'completed_at' => $endTime->toISOString()
+                'commit_hash' => $commitResult['commit_hash'],
+                'project' => $ticketModel->project->jira_key,
+                'repository' => $ticketModel->repository->full_name,
+                'changes_count' => count($executionResult['changes'])
             ];
 
-            $this->logger->info('Ticket-Verarbeitung erfolgreich abgeschlossen', $result);
-            
-            return $result;
-
         } catch (Exception $e) {
-            $endTime = Carbon::now();
-            $duration = $startTime->diffInSeconds($endTime);
-            
-            // Fehler in Ticket-Model speichern
-            if (isset($ticketModel)) {
-                $ticketModel->failProcessing($e->getMessage());
-            }
+            $processingTime = Carbon::now()->diffInSeconds($startTime);
             
             $this->logger->error('Ticket-Verarbeitung fehlgeschlagen', [
                 'ticket_key' => $ticketKey,
+                'processing_time' => $processingTime,
                 'error' => $e->getMessage(),
-                'duration_seconds' => $duration,
                 'trace' => $e->getTraceAsString()
             ]);
+
+            // Ticket als fehlgeschlagen markieren
+            if (isset($ticketModel)) {
+                $ticketModel->markFailed($e->getMessage(), $processingTime);
+                
+                // Projekt-Statistiken aktualisieren
+                if ($ticketModel->project) {
+                    $this->projectService->updateTicketStats($ticketModel->project, false);
+                }
+            }
 
             return [
                 'success' => false,
                 'ticket_key' => $ticketKey,
-                'error' => $e->getMessage(),
-                'processing_time_seconds' => $duration,
-                'failed_at' => $endTime->toISOString()
+                'processing_time' => $processingTime,
+                'error' => $e->getMessage()
             ];
         }
     }
 
     /**
-     * Stellt sicher, dass das Repository für das erste Ticket initialisiert ist
+     * Löst Projekt und Repository für ein Ticket auf
      */
-    private function ensureRepositoryInitialized(TicketDTO $ticket): void
+    private function resolveProjectAndRepository(Ticket $ticketModel, TicketDTO $ticketDTO): void
     {
-        $this->logger->info('Prüfe Repository-Initialisierung', [
-            'ticket_key' => $ticket->key,
-            'repository_url' => $ticket->repositoryUrl
+        $this->logger->info('Löse Projekt und Repository für Ticket auf', [
+            'ticket_key' => $ticketDTO->key
         ]);
 
-        // Prüfe ob Repository bereits initialisiert ist
-        if ($this->repoInit->isRepositoryInitialized($ticket)) {
-            $this->logger->debug('Repository bereits initialisiert', [
-                'ticket_key' => $ticket->key
+        // 1. Projekt aus Jira-Key extrahieren und in DB finden
+        $projectKey = $this->extractProjectKeyFromTicket($ticketDTO->key);
+        $project = $this->projectService->findByJiraKey($projectKey);
+
+        if (!$project) {
+            throw new Exception("Projekt '{$projectKey}' nicht in Datenbank gefunden. Bitte erst erstellen mit: php artisan octomind:project create {$projectKey}");
+        }
+
+        if (!$project->bot_enabled) {
+            throw new Exception("Bot ist für Projekt '{$projectKey}' deaktiviert");
+        }
+
+        // 2. Repository für dieses Ticket auflösen
+        $repository = $this->projectService->resolveRepositoryForTicket($ticketModel);
+
+        if (!$repository) {
+            throw new Exception("Kein Repository für Ticket '{$ticketDTO->key}' gefunden. Bitte Repository mit Projekt verknüpfen.");
+        }
+
+        if (!$repository->bot_enabled) {
+            throw new Exception("Bot ist für Repository '{$repository->full_name}' deaktiviert");
+        }
+
+        // 3. Ticket mit Projekt und Repository verknüpfen
+        $ticketModel->update([
+            'project_id' => $project->id,
+            'repository_id' => $repository->id,
+            'repository_url' => $repository->clone_url // Für Kompatibilität
+        ]);
+
+        $this->logger->info('Projekt und Repository erfolgreich aufgelöst', [
+            'ticket_key' => $ticketDTO->key,
+            'project' => $project->jira_key,
+            'repository' => $repository->full_name
+        ]);
+    }
+
+    /**
+     * Stellt sicher, dass Repository bereit ist
+     */
+    private function ensureRepositoryReady(Repository $repository): void
+    {
+        $this->logger->info('Stelle sicher, dass Repository bereit ist', [
+            'repository' => $repository->full_name
+        ]);
+
+        // 1. Prüfe ob Repository geklont ist, sonst klonen
+        if (!file_exists($repository->local_workspace_path . '/.git')) {
+            $this->logger->info('Repository nicht geklont, klone jetzt', [
+                'repository' => $repository->full_name
             ]);
-            return;
+
+            $cloneResult = $this->repositoryService->cloneRepository($repository);
+            
+            if (!$cloneResult['success']) {
+                throw new Exception('Repository-Kloning fehlgeschlagen: ' . $cloneResult['error']);
+            }
         }
 
-        // Repository für erstes Ticket initialisieren
-        $this->logger->info('Initialisiere Repository für erstes Ticket', [
-            'ticket_key' => $ticket->key
-        ]);
+        // 2. Repository synchronisieren (git pull)
+        if ($repository->is_stale) {
+            $this->logger->info('Repository ist veraltet, synchronisiere', [
+                'repository' => $repository->full_name
+            ]);
 
-        $initResult = $this->repoInit->initializeRepository($ticket);
-        
-        if (!$initResult['success']) {
-            throw new Exception('Repository-Initialisierung fehlgeschlagen: ' . $initResult['error']);
+            $syncResult = $this->repositoryService->syncRepository($repository);
+            
+            if (!$syncResult['success']) {
+                throw new Exception('Repository-Synchronisation fehlgeschlagen: ' . $syncResult['error']);
+            }
         }
 
-        $this->logger->info('Repository erfolgreich initialisiert', [
-            'ticket_key' => $ticket->key,
-            'workspace_path' => $initResult['workspace_path'],
-            'action' => $initResult['clone_result']['action'] ?? 'unknown'
+        $this->logger->info('Repository ist bereit', [
+            'repository' => $repository->full_name,
+            'path' => $repository->local_workspace_path
         ]);
     }
 
     /**
      * Stellt sicher, dass ein sauberer Branch existiert
      */
-    private function ensureCleanBranch(TicketDTO $ticket): void
+    private function ensureCleanBranch(TicketDTO $ticket, Repository $repository): void
     {
         $this->logger->info('Stelle sauberen Branch sicher', [
-            'ticket_key' => $ticket->key
+            'ticket_key' => $ticket->key,
+            'repository' => $repository->full_name
         ]);
 
         try {
-            // Workspace-Pfad über Repository-Initialisierungs-Service holen
-            $repoPath = $this->repoInit->getWorkspacePath($ticket);
-            if (!$repoPath) {
-                throw new Exception('Kein Workspace-Pfad für Ticket gefunden');
-            }
+            $repoPath = $repository->local_workspace_path;
+            $branchName = $repository->getBranchName($ticket->key);
 
-            $branchName = $ticket->generateBranchName();
-
-            // Sicherstellen, dass wir auf main/master sind
-            $this->runGitCommand($repoPath, 'checkout main || git checkout master');
+            // Sicherstellen, dass wir auf dem Standard-Branch sind
+            $this->runGitCommand($repoPath, "checkout {$repository->default_branch}");
             
             // Neueste Änderungen pullen
-            $this->runGitCommand($repoPath, 'pull origin main || git pull origin master');
+            $this->runGitCommand($repoPath, "pull origin {$repository->default_branch}");
             
             // Prüfen ob Branch bereits existiert
             $existingBranches = $this->runGitCommand($repoPath, 'branch -a');
@@ -234,12 +288,14 @@ class TicketProcessingService
             
             $this->logger->info('Sauberer Branch erstellt', [
                 'branch' => $branchName,
-                'ticket_key' => $ticket->key
+                'ticket_key' => $ticket->key,
+                'repository' => $repository->full_name
             ]);
 
         } catch (Exception $e) {
             $this->logger->error('Fehler beim Branch-Setup', [
                 'ticket_key' => $ticket->key,
+                'repository' => $repository->full_name,
                 'error' => $e->getMessage()
             ]);
             throw $e;
@@ -247,176 +303,199 @@ class TicketProcessingService
     }
 
     /**
-     * Erstellt erweiterten Prompt mit vollständigem Kontext
+     * Erstellt erweiterten Prompt mit Repository-Kontext
      */
-    private function buildEnhancedPrompt(TicketDTO $ticket, array $knowledgeBase): string
+    private function buildEnhancedPrompt(TicketDTO $ticket, array $knowledgeBase, Repository $repository): string
     {
-        // Basis-Analyse für Ticket
-        $analysis = [
-            'complexity' => $ticket->estimateComplexity(),
-            'required_skills' => $ticket->identifyRequiredSkills(),
-            'estimated_time' => $this->estimateProcessingTime($ticket),
-            'dependencies' => $this->identifyDependencies($ticket, $knowledgeBase),
-            'risks' => $this->identifyRisks($ticket, $knowledgeBase)
+        $this->logger->info('Erstelle erweiterten Prompt mit Repository-Kontext', [
+            'ticket_key' => $ticket->key,
+            'repository' => $repository->full_name,
+            'framework' => $repository->framework_type
+        ]);
+
+        $repositoryContext = [
+            'repository_name' => $repository->full_name,
+            'framework_type' => $repository->framework_type,
+            'package_manager' => $repository->package_manager,
+            'default_branch' => $repository->default_branch,
+            'allowed_file_extensions' => $repository->allowed_file_extensions,
+            'forbidden_paths' => $repository->forbidden_paths,
+            'workspace_path' => $repository->local_workspace_path
         ];
 
-        // Projekt-Kontext hinzufügen
-        $projectContext = $this->knowledgeBase->generateProjectContext($ticket);
-        
-        // Erweiterten Prompt erstellen
-        $basePrompt = $this->promptBuilder->buildPrompt($ticket, $analysis);
-        
-        // Projekt-Kontext einfügen
-        $enhancedPrompt = $basePrompt . "\n\n" . $projectContext;
-        
-        // Tech-Stack-spezifische Informationen
-        if (!empty($analysis['required_skills'])) {
-            $techStackPrompt = $this->promptBuilder->buildTechStackPrompt($analysis['required_skills']);
-            $enhancedPrompt .= "\n\n" . $techStackPrompt;
-        }
-
-        // Prompt validieren
-        $validation = $this->promptBuilder->validatePrompt($enhancedPrompt);
-        if (!$validation['valid']) {
-            $this->logger->warning('Prompt-Validierung fehlgeschlagen', [
-                'ticket_key' => $ticket->key,
-                'issues' => $validation['issues']
-            ]);
-        }
-
-        return $enhancedPrompt;
+        return $this->promptBuilder->buildEnhancedPrompt($ticket, $knowledgeBase, $repositoryContext);
     }
 
     /**
-     * Behandelt Code-Review-Feedback und verbessert Code
+     * Commit und Push mit Repository-spezifischer Konfiguration
      */
-    private function handleCodeReviewFeedback(TicketDTO $ticket, array $reviewResult, array $originalResult): ?array
+    private function commitAndPushChanges(TicketDTO $ticket, array $executionResult, Repository $repository): array
     {
-        if ($reviewResult['overall_score'] < 0.5) {
-            // Bei sehr schlechtem Score: Komplett neu generieren
-            $this->logger->info('Code-Quality zu schlecht, generiere neu', [
-                'ticket_key' => $ticket->key,
-                'score' => $reviewResult['overall_score']
-            ]);
+        $this->logger->info('Committe und pushe Änderungen', [
+            'ticket_key' => $ticket->key,
+            'repository' => $repository->full_name,
+            'changes_count' => count($executionResult['changes'])
+        ]);
 
-            $improvementPrompt = $this->promptBuilder->buildSelfHealingPrompt(
-                $ticket, 
-                ['message' => 'Code-Review fehlgeschlagen', 'type' => 'quality'], 
-                []
-            );
-
-            $improvedSolution = $this->aiService->generateSolution($improvementPrompt);
-            
-            if ($improvedSolution['success']) {
-                return $this->aiService->executeCode($ticket, $improvedSolution);
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Aktualisiert Jira-Ticket mit Ergebnissen und Zeiterfassung
-     */
-    private function updateJiraTicket(TicketDTO $ticket, array $prResult, int $duration, array $reviewResult): void
-    {
         try {
-            // 1. Zeiterfassung hinzufügen
-            $timeComment = $this->buildTimeTrackingComment($duration, $reviewResult);
-            $this->jiraService->addComment($ticket->key, $timeComment);
+            $repoPath = $repository->local_workspace_path;
+            $branchName = $repository->getBranchName($ticket->key);
 
-            // 2. Beschreibung der Änderungen als Kommentar
-            $changesComment = $this->buildChangesComment($prResult, $reviewResult);
-            $this->jiraService->addComment($ticket->key, $changesComment);
+            // Git-Konfiguration für Repository setzen
+            $this->configureGitForRepository($repoPath, $repository);
 
-            // 3. PR-URL als Kommentar hinzufügen
-            $prComment = $this->buildPRComment($prResult);
-            $this->jiraService->addComment($ticket->key, $prComment);
+            // Änderungen hinzufügen
+            $this->runGitCommand($repoPath, 'add .');
 
-            // 4. Optional: Ticket-Status aktualisieren
-            if ($this->config->get('jira.auto_update_status', true)) {
-                $newStatus = $this->config->get('jira.completed_status', 'In Review');
-                $this->jiraService->updateTicketStatus($ticket->key, $newStatus);
-            }
+            // Commit-Message erstellen
+            $commitMessage = $this->buildCommitMessage($ticket, $executionResult);
+            $this->runGitCommand($repoPath, "commit -m \"{$commitMessage}\"");
 
-            $this->logger->info('Jira-Ticket erfolgreich aktualisiert', [
+            // Commit-Hash ermitteln
+            $commitHash = trim($this->runGitCommand($repoPath, 'rev-parse HEAD'));
+
+            // Push mit SSH
+            $this->runGitCommand($repoPath, "push origin {$branchName}");
+
+            $this->logger->info('Änderungen erfolgreich committed und gepusht', [
                 'ticket_key' => $ticket->key,
-                'duration_minutes' => round($duration / 60, 2),
-                'pr_url' => $prResult['pr_url']
+                'repository' => $repository->full_name,
+                'commit_hash' => substr($commitHash, 0, 8),
+                'branch' => $branchName
             ]);
+
+            return [
+                'success' => true,
+                'commit_hash' => $commitHash,
+                'branch' => $branchName,
+                'commit_message' => $commitMessage
+            ];
 
         } catch (Exception $e) {
-            $this->logger->error('Fehler beim Aktualisieren des Jira-Tickets', [
+            $this->logger->error('Commit/Push fehlgeschlagen', [
                 'ticket_key' => $ticket->key,
+                'repository' => $repository->full_name,
                 'error' => $e->getMessage()
             ]);
-            // Nicht kritisch - Ticket-Verarbeitung trotzdem als erfolgreich werten
+            throw $e;
         }
     }
 
     /**
-     * Erstellt Zeiterfassungs-Kommentar
+     * Erstellt Pull Request mit Repository-spezifischer Konfiguration
      */
-    private function buildTimeTrackingComment(int $duration, array $reviewResult): string
+    private function createPullRequest(TicketDTO $ticket, array $commitResult, Repository $repository): array
     {
-        $minutes = round($duration / 60, 2);
-        $hours = round($duration / 3600, 2);
+        $this->logger->info('Erstelle Pull Request', [
+            'ticket_key' => $ticket->key,
+            'repository' => $repository->full_name,
+            'branch' => $commitResult['branch']
+        ]);
 
-        $comment = "🤖 **Automatische Zeiterfassung - Octomind Bot**\n\n";
-        $comment .= "**Verarbeitungszeit:** {$minutes} Minuten ({$hours} Stunden)\n";
-        $comment .= "**Verarbeitungsdetails:**\n";
-        $comment .= "- Code-Review-Score: " . round(($reviewResult['overall_score'] ?? 0) * 100, 1) . "%\n";
-        $comment .= "- Status: " . ($reviewResult['approval_status'] ?? 'unknown') . "\n";
-        $comment .= "- Verarbeitet am: " . now()->format('d.m.Y H:i:s') . "\n\n";
-        $comment .= "*Diese Zeit wurde automatisch vom Octomind Bot erfasst.*";
+        try {
+            $prTitle = "🤖 {$ticket->key}: {$ticket->summary}";
+            $prBody = $this->buildPRDescription($ticket, $commitResult, $repository);
 
-        return $comment;
-    }
+            // GitHub-Service mit Repository-Konfiguration verwenden
+            $prResult = $this->githubService->createPullRequest(
+                $repository->owner,
+                $repository->name,
+                $commitResult['branch'],
+                $repository->default_branch,
+                $prTitle,
+                $prBody,
+                $repository->create_draft_prs
+            );
 
-    /**
-     * Erstellt Änderungs-Kommentar
-     */
-    private function buildChangesComment(array $prResult, array $reviewResult): string
-    {
-        $comment = "🔧 **Automatische Implementierung abgeschlossen**\n\n";
-        $comment .= "**Durchgeführte Änderungen:**\n";
-        $comment .= "- Branch erstellt: `{$prResult['branch']}`\n";
-        $comment .= "- Commit Hash: `{$prResult['commit_hash']}`\n";
-        $comment .= "- Code-Review durchgeführt\n";
-        $comment .= "- Automatische Tests ausgeführt\n";
-        $comment .= "- Sicherheits-Checks durchgeführt\n\n";
-
-        if (isset($reviewResult['recommendations'])) {
-            $comment .= "**Code-Review-Ergebnisse:**\n";
-            foreach (array_slice($reviewResult['recommendations'], 0, 3) as $rec) {
-                $comment .= "- {$rec['message']}\n";
+            if (!$prResult['success']) {
+                throw new Exception('PR-Erstellung fehlgeschlagen: ' . $prResult['error']);
             }
-            $comment .= "\n";
+
+            $this->logger->info('Pull Request erfolgreich erstellt', [
+                'ticket_key' => $ticket->key,
+                'repository' => $repository->full_name,
+                'pr_url' => $prResult['pr_url'],
+                'pr_number' => $prResult['pr_number']
+            ]);
+
+            return $prResult;
+
+        } catch (Exception $e) {
+            $this->logger->error('PR-Erstellung fehlgeschlagen', [
+                'ticket_key' => $ticket->key,
+                'repository' => $repository->full_name,
+                'error' => $e->getMessage()
+            ]);
+            throw $e;
+        }
+    }
+
+    /**
+     * Konfiguriert Git für Repository-spezifische Einstellungen
+     */
+    private function configureGitForRepository(string $repoPath, Repository $repository): void
+    {
+        $authorName = $this->config->get('repository.commit_author_name', 'Octomind Bot');
+        $authorEmail = $this->config->get('repository.commit_author_email', 'bot@octomind.com');
+
+        $commands = [
+            "cd {$repoPath}",
+            "git config user.name \"{$authorName}\"",
+            "git config user.email \"{$authorEmail}\"",
+            "git config init.defaultBranch {$repository->default_branch}"
+        ];
+
+        foreach ($commands as $command) {
+            shell_exec($command . ' 2>&1');
         }
 
-        $comment .= "*Alle Änderungen wurden automatisch vom Octomind Bot implementiert.*";
-
-        return $comment;
+        $this->logger->debug('Git für Repository konfiguriert', [
+            'repository' => $repository->full_name,
+            'author' => $authorName,
+            'email' => $authorEmail
+        ]);
     }
 
     /**
-     * Erstellt PR-Kommentar
+     * Erstellt PR-Beschreibung mit Repository-Kontext
      */
-    private function buildPRComment(array $prResult): string
+    private function buildPRDescription(TicketDTO $ticket, array $commitResult, Repository $repository): string
     {
-        $comment = "🚀 **Pull Request erstellt**\n\n";
-        $comment .= "**PR-Details:**\n";
-        $comment .= "- **URL:** {$prResult['pr_url']}\n";
-        $comment .= "- **PR-Nummer:** #{$prResult['pr_number']}\n";
-        $comment .= "- **Branch:** `{$prResult['branch']}`\n\n";
-        $comment .= "Der Pull Request ist bereit für Review und kann nach Prüfung gemerged werden.\n\n";
-        $comment .= "*Automatisch erstellt vom Octomind Bot*";
+        $description = "## 🎫 Jira-Ticket\n\n";
+        $description .= "**Ticket:** [{$ticket->key}]({$this->getJiraTicketUrl($ticket)})\n";
+        $description .= "**Zusammenfassung:** {$ticket->summary}\n\n";
 
-        return $comment;
+        if ($ticket->description) {
+            $description .= "**Beschreibung:**\n{$ticket->description}\n\n";
+        }
+
+        $description .= "## 🔗 Repository-Informationen\n\n";
+        $description .= "**Repository:** {$repository->full_name}\n";
+        $description .= "**Framework:** " . ($repository->framework_type ?? 'Unbekannt') . "\n";
+        $description .= "**Branch:** `{$commitResult['branch']}`\n";
+        $description .= "**Commit:** `" . substr($commitResult['commit_hash'], 0, 8) . "`\n\n";
+
+        $description .= "## 🤖 Automatisch generiert\n\n";
+        $description .= "Dieser Pull Request wurde automatisch vom Octomind Bot erstellt.\n";
+        
+        if ($repository->create_draft_prs) {
+            $description .= "\n⚠️ **Draft-Status:** Bitte Review durchführen bevor Merge.\n";
+        }
+
+        return $description;
     }
 
     /**
-     * Hilfsmethoden
+     * Extrahiert Projekt-Key aus Ticket-Key
+     */
+    private function extractProjectKeyFromTicket(string $ticketKey): string
+    {
+        // Beispiel: "PROJ-123" -> "PROJ"
+        return explode('-', $ticketKey)[0];
+    }
+
+    /**
+     * Holt oder erstellt Ticket-Model
      */
     private function getOrCreateTicketModel(string $ticketKey): Ticket
     {
@@ -431,13 +510,16 @@ class TicketProcessingService
                 throw new Exception("Ticket {$ticketKey} nicht gefunden");
             }
             
-            // Ticket in Datenbank erstellen (wird bereits in JiraService gemacht)
+            // Ticket wurde bereits in JiraService in DB gespeichert
             $ticket = Ticket::findByJiraKey($ticketKey);
         }
         
         return $ticket;
     }
 
+    /**
+     * Konvertiert Ticket-Model zu DTO
+     */
     private function convertToDTO(Ticket $ticket): TicketDTO
     {
         return new TicketDTO(
@@ -455,63 +537,37 @@ class TicketProcessingService
         );
     }
 
-    private function estimateProcessingTime(TicketDTO $ticket): int
+    /**
+     * Erstellt Commit-Message
+     */
+    private function buildCommitMessage(TicketDTO $ticket, array $executionResult): string
     {
-        $baseTime = 15; // Minuten
-        $complexity = $ticket->estimateComplexity();
+        $message = "🤖 {$ticket->key}: {$ticket->summary}";
         
-        $multiplier = match($complexity) {
-            'very_high' => 4,
-            'high' => 3,
-            'medium' => 2,
-            'low' => 1.5,
-            default => 1
-        };
-        
-        return (int)($baseTime * $multiplier);
-    }
-
-    private function identifyDependencies(TicketDTO $ticket, array $knowledgeBase): array
-    {
-        $dependencies = [];
-        
-        // Aus Knowledge-Base extrahieren
-        if (isset($knowledgeBase['dependencies'])) {
-            $dependencies = array_merge($dependencies, array_keys($knowledgeBase['dependencies']));
+        if (count($executionResult['changes']) > 0) {
+            $message .= "\n\nÄnderungen:";
+            foreach ($executionResult['changes'] as $change) {
+                $message .= "\n- {$change['file']}: {$change['description']}";
+            }
         }
         
-        return $dependencies;
+        $message .= "\n\nAutomatisch generiert vom Octomind Bot";
+        
+        return $message;
     }
 
-    private function identifyRisks(TicketDTO $ticket, array $knowledgeBase): array
+    /**
+     * Holt Jira-Ticket-URL
+     */
+    private function getJiraTicketUrl(TicketDTO $ticket): string
     {
-        $risks = [];
-        
-        // Git-Status-basierte Risiken
-        if (isset($knowledgeBase['git_status']['uncommitted_changes'])) {
-            $risks[] = 'Uncommitted changes in working directory';
-        }
-        
-        // Komplexitäts-basierte Risiken
-        if ($ticket->estimateComplexity() === 'very_high') {
-            $risks[] = 'High complexity ticket may require manual review';
-        }
-        
-        return $risks;
+        $baseUrl = $this->config->get('auth.jira_base_url');
+        return rtrim($baseUrl, '/') . '/browse/' . $ticket->key;
     }
 
-    private function formatDuration(int $seconds): string
-    {
-        $minutes = floor($seconds / 60);
-        $remainingSeconds = $seconds % 60;
-        
-        if ($minutes > 0) {
-            return "{$minutes}m {$remainingSeconds}s";
-        }
-        
-        return "{$seconds}s";
-    }
-
+    /**
+     * Führt Git-Befehl aus
+     */
     private function runGitCommand(string $workingDir, string $command, bool $throwOnError = true): string
     {
         $fullCommand = "cd \"{$workingDir}\" && git {$command}";
@@ -535,7 +591,10 @@ class TicketProcessingService
      */
     public function getTickets(int $limit = 20, ?string $status = null): array
     {
-        $query = Ticket::query()->orderBy('created_at', 'desc')->limit($limit);
+        $query = Ticket::query()
+                      ->with(['project', 'repository'])
+                      ->orderBy('created_at', 'desc')
+                      ->limit($limit);
         
         if ($status) {
             $query->where('status', $status);
@@ -550,7 +609,9 @@ class TicketProcessingService
                 'created_at' => $ticket->created_at,
                 'processing_duration' => $ticket->formatted_duration,
                 'pr_url' => $ticket->pr_url,
-                'complexity' => $ticket->complexity_level
+                'complexity' => $ticket->complexity_level,
+                'project' => $ticket->project?->jira_key,
+                'repository' => $ticket->repository?->full_name
             ];
         })->toArray();
     }
@@ -562,7 +623,7 @@ class TicketProcessingService
 
     public function getTicketDetails(string $ticketKey): ?array
     {
-        $ticket = Ticket::findByJiraKey($ticketKey);
+        $ticket = Ticket::with(['project', 'repository'])->where('jira_key', $ticketKey)->first();
         
         if (!$ticket) {
             return null;
@@ -595,7 +656,18 @@ class TicketProcessingService
             'retry_count' => $ticket->retry_count,
             'jira_url' => $ticket->jira_url,
             'created_at' => $ticket->created_at,
-            'updated_at' => $ticket->updated_at
+            'updated_at' => $ticket->updated_at,
+            'project' => $ticket->project ? [
+                'jira_key' => $ticket->project->jira_key,
+                'name' => $ticket->project->name,
+                'jira_url' => $ticket->project->jira_url
+            ] : null,
+            'repository' => $ticket->repository ? [
+                'full_name' => $ticket->repository->full_name,
+                'provider' => $ticket->repository->provider,
+                'framework_type' => $ticket->repository->framework_type,
+                'provider_url' => $ticket->repository->provider_url
+            ] : null
         ];
     }
 } 
