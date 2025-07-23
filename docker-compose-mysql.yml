@@ -1,0 +1,83 @@
+# Alternative MySQL-Konfiguration für Octomind
+# Nutze: docker-compose -f docker-compose-mysql.yml up -d
+
+services:
+  # MySQL Database statt PostgreSQL
+  database:
+    image: mysql:8.0
+    container_name: octomind-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: octomind
+      MYSQL_USER: octomind
+      MYSQL_PASSWORD: octomind_password
+      MYSQL_ROOT_PASSWORD: octomind_root_password
+      MYSQL_CHARACTER_SET_SERVER: utf8mb4
+      MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/init-mysql.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - octomind-network
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "octomind", "-poctomind_password"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PHPMyAdmin für MySQL-Management  
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin:latest
+    container_name: octomind-phpmyadmin
+    restart: unless-stopped
+    environment:
+      - PMA_HOST=database
+      - PMA_PORT=3306
+      - PMA_USER=octomind
+      - PMA_PASSWORD=octomind_password
+      - MYSQL_ROOT_PASSWORD=octomind_root_password
+    networks:
+      - octomind-network
+    ports:
+      - "8081:80"
+    depends_on:
+      - database
+
+  # Andere Services bleiben gleich...
+  redis:
+    image: redis:7-alpine
+    container_name: octomind-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass octomind_redis_password
+    volumes:
+      - redis-data:/data
+    networks:
+      - octomind-network
+    ports:
+      - "6379:6379"
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: octomind-mailpit
+    restart: unless-stopped
+    volumes:
+      - mailpit-data:/data
+    networks:
+      - octomind-network
+    ports:
+      - "8027:8025"
+      - "1027:1025"
+
+volumes:
+  mysql-data:
+    driver: local
+  redis-data:
+    driver: local
+  mailpit-data:
+    driver: local
+
+networks:
+  octomind-network:
+    driver: bridge 
