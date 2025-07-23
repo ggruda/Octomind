@@ -1,0 +1,55 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+*.md
+docs/
+
+# Environment files (will be mounted as volumes)
+.env*
+!.env.example
+
+# Dependencies (will be installed in container)
+vendor/
+node_modules/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Laravel specific
+storage/app/
+storage/framework/cache/
+storage/framework/sessions/
+storage/framework/views/
+storage/logs/
+bootstrap/cache/
+
+# Database files (will be managed by Docker volumes)
+database/database.sqlite
+
+# Testing
+.phpunit.result.cache
+tests/
+
+# Build artifacts
+*.log
+*.tmp
+
+# Docker files (not needed in container)
+docker-compose*.yml
+Dockerfile
+.dockerignore
+
+# Backup files
+backup_*.sql 

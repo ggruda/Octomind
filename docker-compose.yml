@@ -1,0 +1,217 @@
+services:
+  # Octomind Bot Service
+  octomind-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: octomind-bot
+    restart: unless-stopped
+    environment:
+      - APP_ENV=local
+      - APP_DEBUG=true
+      - BOT_ENABLED=true
+      - BOT_SIMULATE_MODE=true
+      - BOT_VERBOSE_LOGGING=true
+      - BOT_LOG_LEVEL=debug
+      - DB_CONNECTION=sqlite
+      - DB_DATABASE=/var/www/octomind/database/database.sqlite
+    env_file:
+      - .env
+    volumes:
+      - ./:/var/www/octomind
+      - ./storage:/var/www/octomind/storage
+      - ./database:/var/www/octomind/database
+      - bot-repositories:/var/www/octomind/storage/app/repositories
+    networks:
+      - octomind-network
+    depends_on:
+      - redis
+      - database
+    command: php artisan octomind:start --debug
+    healthcheck:
+      test: ["CMD", "php", "artisan", "octomind:start", "--config-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Laravel Web Interface
+  web-interface:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: octomind-web
+    restart: unless-stopped
+    environment:
+      - APP_ENV=local
+      - APP_DEBUG=true
+      - DB_CONNECTION=sqlite
+      - DB_DATABASE=/var/www/octomind/database/database.sqlite
+    env_file:
+      - .env
+    volumes:
+      - ./:/var/www/octomind
+      - ./storage:/var/www/octomind/storage
+      - ./database:/var/www/octomind/database
+    networks:
+      - octomind-network
+    depends_on:
+      - redis
+      - database
+    ports:
+      - "8000:8000"
+    command: php artisan serve --host=0.0.0.0 --port=8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Database Service (PostgreSQL für Production)
+  database:
+    image: postgres:16-alpine
+    container_name: octomind-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: octomind
+      POSTGRES_USER: octomind
+      POSTGRES_PASSWORD: octomind_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - octomind-network
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U octomind -d octomind"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis für Caching und Queue Management
+  redis:
+    image: redis:7-alpine
+    container_name: octomind-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass octomind_redis_password
+    volumes:
+      - redis-data:/data
+    networks:
+      - octomind-network
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Queue Worker für Background Jobs
+  queue-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    restart: unless-stopped
+    environment:
+      - APP_ENV=local
+      - QUEUE_CONNECTION=redis
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=octomind_redis_password
+    env_file:
+      - .env
+    volumes:
+      - ./:/var/www/octomind
+      - ./storage:/var/www/octomind/storage
+      - bot-repositories:/var/www/octomind/storage/app/repositories
+    networks:
+      - octomind-network
+    depends_on:
+      - redis
+      - database
+    command: php artisan queue:work --verbose --tries=3 --timeout=90
+
+  # Scheduler für Cron Jobs
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: octomind-scheduler
+    restart: unless-stopped
+    environment:
+      - APP_ENV=local
+    env_file:
+      - .env
+    volumes:
+      - ./:/var/www/octomind
+      - ./storage:/var/www/octomind/storage
+    networks:
+      - octomind-network
+    depends_on:
+      - redis
+      - database
+    command: php artisan schedule:work --verbose
+
+  # Monitoring Dashboard (optional)
+  monitoring:
+    image: grafana/grafana:latest
+    container_name: octomind-monitoring
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=octomind_admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./docker/grafana/dashboards/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml
+      - ./docker/grafana/dashboards/octomind:/etc/grafana/provisioning/dashboards/octomind
+      - ./docker/grafana/datasources/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+    networks:
+      - octomind-network
+    ports:
+      - "3000:3000"
+    depends_on:
+      - database
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Log Management
+  log-viewer:
+    image: amir20/dozzle:latest
+    container_name: octomind-logs
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - octomind-network
+    ports:
+      - "8080:8080"
+    environment:
+      - DOZZLE_LEVEL=info
+      - DOZZLE_TAILSIZE=300
+
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  grafana-data:
+    driver: local
+  bot-repositories:
+    driver: local
+
+networks:
+  octomind-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16 

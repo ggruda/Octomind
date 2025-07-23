@@ -1,0 +1,185 @@
+version: '3.8'
+
+services:
+  # Octomind Bot Service (Production)
+  octomind-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: octomind-bot-prod
+    restart: unless-stopped
+    environment:
+      - APP_ENV=production
+      - APP_DEBUG=false
+      - BOT_ENABLED=true
+      - BOT_SIMULATE_MODE=false
+      - DB_CONNECTION=pgsql
+      - DB_HOST=database
+      - REDIS_HOST=redis
+      - QUEUE_CONNECTION=redis
+    env_file:
+      - docker/env.docker.example
+    volumes:
+      - bot-repositories:/var/www/octomind/storage/app/repositories
+      - bot-logs:/var/www/octomind/storage/logs
+    networks:
+      - octomind-network
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+  # Database Service (PostgreSQL Production)
+  database:
+    image: postgres:16-alpine
+    container_name: octomind-db-prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: octomind
+      POSTGRES_USER: octomind
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-octomind_secure_password}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+      - ./docker/postgres.conf:/etc/postgresql/postgresql.conf
+    networks:
+      - octomind-network
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U octomind -d octomind"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+
+  # Redis für Production
+  redis:
+    image: redis:7-alpine
+    container_name: octomind-redis-prod
+    restart: unless-stopped
+    command: >
+      redis-server 
+      --appendonly yes 
+      --requirepass ${REDIS_PASSWORD:-octomind_secure_redis_password}
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - octomind-network
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Reverse Proxy (Nginx)
+  nginx:
+    image: nginx:alpine
+    container_name: octomind-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./docker/nginx/sites:/etc/nginx/conf.d
+      - ./docker/ssl:/etc/nginx/ssl
+    networks:
+      - octomind-network
+    depends_on:
+      - monitoring
+
+  # Production Monitoring
+  monitoring:
+    image: grafana/grafana:latest
+    container_name: octomind-monitoring-prod
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-octomind_secure_admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./docker/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./docker/grafana/datasources:/etc/grafana/provisioning/datasources
+    networks:
+      - octomind-network
+    depends_on:
+      - database
+
+  # Log Aggregation
+  loki:
+    image: grafana/loki:latest
+    container_name: octomind-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki-data:/tmp/loki
+      - ./docker/loki/loki-config.yaml:/etc/loki/local-config.yaml
+    networks:
+      - octomind-network
+    ports:
+      - "127.0.0.1:3100:3100"
+
+  # Metrics Collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: octomind-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - prometheus-data:/prometheus
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - octomind-network
+    ports:
+      - "127.0.0.1:9090:9090"
+
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  grafana-data:
+    driver: local
+  loki-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  bot-repositories:
+    driver: local
+  bot-logs:
+    driver: local
+
+networks:
+  octomind-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16 
