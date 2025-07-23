@@ -201,27 +201,26 @@ services:
       - DOZZLE_LEVEL=info
       - DOZZLE_TAILSIZE=300
 
-  # PHPMyAdmin für Datenbank-Management
-  phpmyadmin:
-    image: phpmyadmin/phpmyadmin:latest
-    container_name: octomind-phpmyadmin
+  # pgAdmin für PostgreSQL-Datenbank-Management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: octomind-pgadmin
     restart: unless-stopped
     environment:
-      - PMA_HOST=database
-      - PMA_PORT=5432
-      - PMA_USER=octomind
-      - PMA_PASSWORD=octomind_password
-      - MYSQL_ROOT_PASSWORD=octomind_password
-      - PMA_ARBITRARY=1
-      - PMA_ABSOLUTE_URI=http://localhost:8081/
+      - PGADMIN_DEFAULT_EMAIL=admin@octomind.com
+      - PGADMIN_DEFAULT_PASSWORD=octomind_admin
+      - PGADMIN_CONFIG_SERVER_MODE=False
+      - PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED=False
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
     networks:
       - octomind-network
     ports:
-      - "8081:80"
+      - "8082:80"
     depends_on:
       - database
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:80/ || exit 1"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:80/misc/ping || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -258,6 +257,8 @@ volumes:
   bot-ssh-keys:
     driver: local
   mailpit-data:
+    driver: local
+  pgadmin-data:
     driver: local
 
 networks:
