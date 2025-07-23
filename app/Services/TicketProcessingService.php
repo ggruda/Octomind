@@ -328,10 +328,11 @@ class TicketProcessingService
 
     /**
      * Commit und Push mit Repository-spezifischer Konfiguration
+     * WICHTIG: Wird nach JEDER Aufgabe ausgeführt (git add . && git commit && git push)
      */
     private function commitAndPushChanges(TicketDTO $ticket, array $executionResult, Repository $repository): array
     {
-        $this->logger->info('Committe und pushe Änderungen', [
+        $this->logger->info('🔄 Starte Git-Workflow: add -> commit -> push', [
             'ticket_key' => $ticket->key,
             'repository' => $repository->full_name,
             'changes_count' => count($executionResult['changes'])
@@ -344,40 +345,116 @@ class TicketProcessingService
             // Git-Konfiguration für Repository setzen
             $this->configureGitForRepository($repoPath, $repository);
 
-            // Änderungen hinzufügen
-            $this->runGitCommand($repoPath, 'add .');
+            // SCHRITT 1: git add . (ALLE Änderungen hinzufügen)
+            $this->logger->debug('🔹 Schritt 1: git add .', [
+                'repository_path' => $repoPath
+            ]);
+            
+            $addOutput = $this->runGitCommand($repoPath, 'add .');
+            
+            // Prüfen was hinzugefügt wurde
+            $statusOutput = $this->runGitCommand($repoPath, 'status --porcelain');
+            
+            if (empty(trim($statusOutput))) {
+                $this->logger->warning('⚠️ Keine Änderungen zum Committen gefunden', [
+                    'ticket_key' => $ticket->key,
+                    'repository' => $repository->full_name
+                ]);
+                
+                // Trotzdem erfolgreich zurückgeben, da keine Änderungen = kein Fehler
+                return [
+                    'success' => true,
+                    'commit_hash' => null,
+                    'branch' => $branchName,
+                    'commit_message' => 'Keine Änderungen',
+                    'no_changes' => true
+                ];
+            }
 
-            // Commit-Message erstellen
+            $this->logger->debug('✅ Git add erfolgreich', [
+                'staged_changes' => explode("\n", trim($statusOutput))
+            ]);
+
+            // SCHRITT 2: git commit (Commit erstellen)
+            $this->logger->debug('🔹 Schritt 2: git commit');
+            
             $commitMessage = $this->buildCommitMessage($ticket, $executionResult);
-            $this->runGitCommand($repoPath, "commit -m \"{$commitMessage}\"");
+            $commitOutput = $this->runGitCommand($repoPath, "commit -m \"{$commitMessage}\"");
 
             // Commit-Hash ermitteln
             $commitHash = trim($this->runGitCommand($repoPath, 'rev-parse HEAD'));
+            
+            $this->logger->debug('✅ Git commit erfolgreich', [
+                'commit_hash' => substr($commitHash, 0, 8),
+                'commit_message' => $commitMessage
+            ]);
 
-            // Push mit SSH
-            $this->runGitCommand($repoPath, "push origin {$branchName}");
+            // SCHRITT 3: git push (Änderungen hochladen)
+            $this->logger->debug('🔹 Schritt 3: git push origin ' . $branchName);
+            
+            $pushOutput = $this->runGitCommand($repoPath, "push origin {$branchName}");
+            
+            $this->logger->debug('✅ Git push erfolgreich', [
+                'branch' => $branchName,
+                'remote' => 'origin'
+            ]);
 
-            $this->logger->info('Änderungen erfolgreich committed und gepusht', [
+            // Erfolgreiche Zusammenfassung
+            $this->logger->info('🎉 Git-Workflow erfolgreich abgeschlossen (add -> commit -> push)', [
                 'ticket_key' => $ticket->key,
                 'repository' => $repository->full_name,
                 'commit_hash' => substr($commitHash, 0, 8),
-                'branch' => $branchName
+                'branch' => $branchName,
+                'changes_committed' => count($executionResult['changes'])
             ]);
 
             return [
                 'success' => true,
                 'commit_hash' => $commitHash,
                 'branch' => $branchName,
-                'commit_message' => $commitMessage
+                'commit_message' => $commitMessage,
+                'git_add_output' => $addOutput,
+                'git_commit_output' => $commitOutput,
+                'git_push_output' => $pushOutput
             ];
 
         } catch (Exception $e) {
-            $this->logger->error('Commit/Push fehlgeschlagen', [
+            $this->logger->error('❌ Git-Workflow fehlgeschlagen', [
                 'ticket_key' => $ticket->key,
                 'repository' => $repository->full_name,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
+                'failed_step' => $this->determineFailedGitStep($e->getMessage())
             ]);
-            throw $e;
+            
+            // Zusätzliche Debug-Informationen bei Git-Fehlern
+            try {
+                $gitStatus = $this->runGitCommand($repoPath, 'status', false);
+                $this->logger->debug('Git-Status bei Fehler', [
+                    'git_status' => $gitStatus
+                ]);
+            } catch (Exception $statusException) {
+                $this->logger->debug('Konnte Git-Status nicht ermitteln', [
+                    'status_error' => $statusException->getMessage()
+                ]);
+            }
+            
+            throw new Exception("Git-Workflow fehlgeschlagen: {$e->getMessage()}");
+        }
+    }
+
+    /**
+     * Ermittelt welcher Git-Schritt fehlgeschlagen ist
+     */
+    private function determineFailedGitStep(string $errorMessage): string
+    {
+        if (str_contains($errorMessage, 'git add')) {
+            return 'git_add';
+        } elseif (str_contains($errorMessage, 'commit')) {
+            return 'git_commit';
+        } elseif (str_contains($errorMessage, 'push')) {
+            return 'git_push';
+        } else {
+            return 'unknown';
         }
     }
 
