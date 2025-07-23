@@ -357,23 +357,20 @@ class Repository extends Model
         Cache::forget($this->getCacheKey());
         Cache::forget($this->getCacheKey('config'));
         Cache::forget($this->getCacheKey('projects'));
-        Cache::tags(['repositories', "repository:{$this->full_name}"])->flush();
     }
 
     public function getCachedConfig(): array
     {
-        return Cache::tags(['repositories', "repository:{$this->full_name}"])
-                   ->remember($this->getCacheKey('config'), 3600, function () {
-                       return $this->getWorkspaceConfig();
-                   });
+        return Cache::remember($this->getCacheKey('config'), 3600, function () {
+            return $this->getWorkspaceConfig();
+        });
     }
 
     public function getCachedProjects(): \Illuminate\Support\Collection
     {
-        return Cache::tags(['repositories', "repository:{$this->full_name}"])
-                   ->remember($this->getCacheKey('projects'), 3600, function () {
-                       return $this->activeProjects()->get();
-                   });
+        return Cache::remember($this->getCacheKey('projects'), 3600, function () {
+            return $this->activeProjects()->get();
+        });
     }
 
     /**
@@ -381,31 +378,28 @@ class Repository extends Model
      */
     public static function findByFullName(string $fullName): ?self
     {
-        return Cache::tags(['repositories'])
-                   ->remember("repository:by_name:{$fullName}", 3600, function () use ($fullName) {
-                       return static::byFullName($fullName)->active()->first();
-                   });
+        return Cache::remember("repository:by_name:{$fullName}", 3600, function () use ($fullName) {
+            return static::byFullName($fullName)->active()->first();
+        });
     }
 
     public static function getActiveRepositories(): \Illuminate\Support\Collection
     {
-        return Cache::tags(['repositories'])
-                   ->remember('repositories:active', 1800, function () {
-                       return static::active()->botEnabled()->get();
-                   });
+        return Cache::remember('repositories:active', 1800, function () {
+            return static::active()->botEnabled()->get();
+        });
     }
 
     public static function getByProvider(string $provider): \Illuminate\Support\Collection
     {
-        return Cache::tags(['repositories'])
-                   ->remember("repositories:provider:{$provider}", 1800, function () use ($provider) {
-                       return static::byProvider($provider)->active()->get();
-                   });
+        return Cache::remember("repositories:provider:{$provider}", 1800, function () use ($provider) {
+            return static::byProvider($provider)->active()->get();
+        });
     }
 
     public static function clearAllCache(): void
     {
-        Cache::tags(['repositories'])->flush();
+        Cache::flush(); // Entferne alle Cache-Einträge da wir keine Tags verwenden können
     }
 
     /**

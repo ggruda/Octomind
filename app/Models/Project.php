@@ -274,33 +274,30 @@ class Project extends Model
         Cache::forget($this->getCacheKey());
         Cache::forget($this->getCacheKey('repositories'));
         Cache::forget($this->getCacheKey('config'));
-        Cache::tags(['projects', "project:{$this->jira_key}"])->flush();
     }
 
     public function getCachedRepositories(): \Illuminate\Support\Collection
     {
-        return Cache::tags(['projects', "project:{$this->jira_key}"])
-                   ->remember($this->getCacheKey('repositories'), 3600, function () {
-                       return $this->activeRepositories()->get();
-                   });
+        return Cache::remember($this->getCacheKey('repositories'), 3600, function () {
+            return $this->activeRepositories()->get();
+        });
     }
 
     public function getCachedConfig(): array
     {
-        return Cache::tags(['projects', "project:{$this->jira_key}"])
-                   ->remember($this->getCacheKey('config'), 3600, function () {
-                       return [
-                           'jira_key' => $this->jira_key,
-                           'name' => $this->name,
-                           'jira_base_url' => $this->jira_base_url,
-                           'bot_enabled' => $this->bot_enabled,
-                           'required_label' => $this->required_label,
-                           'require_unassigned' => $this->require_unassigned,
-                           'allowed_statuses' => $this->allowed_statuses,
-                           'fetch_interval' => $this->fetch_interval,
-                           'custom_fields_mapping' => $this->custom_fields_mapping,
-                       ];
-                   });
+        return Cache::remember($this->getCacheKey('config'), 3600, function () {
+            return [
+                'jira_key' => $this->jira_key,
+                'name' => $this->name,
+                'jira_base_url' => $this->jira_base_url,
+                'bot_enabled' => $this->bot_enabled,
+                'required_label' => $this->required_label,
+                'require_unassigned' => $this->require_unassigned,
+                'allowed_statuses' => $this->allowed_statuses,
+                'fetch_interval' => $this->fetch_interval,
+                'custom_fields_mapping' => $this->custom_fields_mapping,
+            ];
+        });
     }
 
     /**
@@ -308,23 +305,21 @@ class Project extends Model
      */
     public static function findByJiraKey(string $jiraKey): ?self
     {
-        return Cache::tags(['projects'])
-                   ->remember("project:by_key:{$jiraKey}", 3600, function () use ($jiraKey) {
-                       return static::byJiraKey($jiraKey)->active()->first();
-                   });
+        return Cache::remember("project:by_key:{$jiraKey}", 3600, function () use ($jiraKey) {
+            return static::byJiraKey($jiraKey)->active()->first();
+        });
     }
 
     public static function getActiveProjects(): \Illuminate\Support\Collection
     {
-        return Cache::tags(['projects'])
-                   ->remember('projects:active', 1800, function () {
-                       return static::active()->botEnabled()->get();
-                   });
+        return Cache::remember('projects:active', 1800, function () {
+            return static::active()->botEnabled()->get();
+        });
     }
 
     public static function clearAllCache(): void
     {
-        Cache::tags(['projects'])->flush();
+        Cache::flush(); // Entferne alle Cache-Einträge da wir keine Tags verwenden können
     }
 
     /**

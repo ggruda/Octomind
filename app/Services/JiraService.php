@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Contracts\TicketProviderInterface;
 use App\DTOs\TicketDTO;
 use App\Enums\TicketStatus;
 use Illuminate\Support\Facades\Http;
@@ -9,14 +10,14 @@ use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 use Exception;
 
-class JiraService
+class JiraService implements TicketProviderInterface
 {
     private ConfigService $config;
     private LogService $logger;
-    private string $baseUrl;
-    private string $username;
-    private string $apiToken;
-    private string $projectKey;
+    private ?string $baseUrl;
+    private ?string $username;
+    private ?string $apiToken;
+    private ?string $projectKey;
 
     public function __construct()
     {
@@ -26,7 +27,7 @@ class JiraService
         $this->baseUrl = $this->config->get('auth.jira_base_url');
         $this->username = $this->config->get('auth.jira_username');
         $this->apiToken = $this->config->get('auth.jira_api_token');
-        $this->projectKey = $this->config->get('jira.project_key');
+        $this->projectKey = $this->config->get('jira.project_key'); // Zurück zum richtigen Pfad
     }
 
     /**
@@ -223,6 +224,59 @@ class JiraService
     }
 
     /**
+     * Validiert die Jira-Konfiguration
+     */
+    public function validateConfiguration(): array
+    {
+        $errors = [];
+        
+        if (empty($this->baseUrl)) {
+            $errors[] = 'Jira Base URL ist nicht konfiguriert';
+        }
+        
+        if (empty($this->username)) {
+            $errors[] = 'Jira Username ist nicht konfiguriert';
+        }
+        
+        if (empty($this->apiToken)) {
+            $errors[] = 'Jira API Token ist nicht konfiguriert';
+        }
+        
+        if (empty($this->projectKey)) {
+            $errors[] = 'Jira Project Key ist nicht konfiguriert';
+        }
+
+        return [
+            'valid' => empty($errors),
+            'errors' => $errors,
+            'provider' => 'jira'
+        ];
+    }
+
+    /**
+     * Gibt den Provider-Namen zurück
+     */
+    public function getProviderName(): string
+    {
+        return 'Jira';
+    }
+
+    /**
+     * Gibt unterstützte Ticket-Status zurück
+     */
+    public function getSupportedStatuses(): array
+    {
+        return [
+            'Open',
+            'In Progress', 
+            'To Do',
+            'Done',
+            'Closed',
+            'Resolved'
+        ];
+    }
+
+    /**
      * Erstellt JQL-Query basierend auf Konfiguration
      */
     private function buildJQL(): string
@@ -234,11 +288,18 @@ class JiraService
             $conditions[] = "project = \"{$this->projectKey}\"";
         }
 
-        // Status-Filter
-        $allowedStatuses = $this->config->get('jira.allowed_statuses', ['Open', 'In Progress', 'To Do']);
+        // Status-Filter - verwende Status-IDs für deutsche Jira-Instanzen
+        $allowedStatuses = $this->config->get('jira.allowed_statuses', ['10000', '10001', '10002']); // Zu erledigen, In Arbeit, Wird überprüft
         if (!empty($allowedStatuses)) {
-            $statusList = implode('", "', $allowedStatuses);
-            $conditions[] = "status IN (\"{$statusList}\")";
+            // Prüfe ob es Status-IDs (Zahlen) oder Namen sind
+            $isNumeric = is_numeric($allowedStatuses[0]);
+            if ($isNumeric) {
+                $statusList = implode(', ', $allowedStatuses);
+                $conditions[] = "status IN ({$statusList})";
+            } else {
+                $statusList = implode('", "', $allowedStatuses);
+                $conditions[] = "status IN (\"{$statusList}\")";
+            }
         }
 
         // Label-Filter

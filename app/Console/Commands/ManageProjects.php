@@ -8,6 +8,7 @@ use App\Models\Project;
 use App\Models\Repository;
 use Illuminate\Console\Command;
 use Exception;
+use Carbon\Carbon;
 
 class ManageProjects extends Command
 {
@@ -96,11 +97,11 @@ class ManageProjects extends Command
                 $project['jira_key'],
                 $project['name'],
                 $project['bot_enabled'] ? '✅' : '❌',
-                $project['total_tickets'],
+                $project['total_tickets_processed'], // Korrigierter Key
                 number_format($project['success_rate'] * 100, 1) . '%',
                 $project['repositories_count'],
-                $project['default_repository'] ?? '-',
-                $project['last_sync_at'] ? $project['last_sync_at']->diffForHumans() : 'Nie'
+                '-', // Entferne default_repository da es nicht existiert
+                $project['last_sync_at'] ? Carbon::parse($project['last_sync_at'])->diffForHumans() : 'Nie'
             ];
         }
 

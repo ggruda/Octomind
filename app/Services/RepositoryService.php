@@ -354,13 +354,12 @@ class RepositoryService
      */
     public function getRepositoriesNeedingSync(): Collection
     {
-        return Cache::tags(['repositories'])
-                   ->remember('repositories:needing_sync', 300, function () {
-                       return Repository::active()
-                                      ->botEnabled()
-                                      ->needingSync()
-                                      ->get();
-                   });
+        return Cache::remember('repositories:needing_sync', 300, function () {
+            return Repository::active()
+                            ->botEnabled()
+                            ->needingSync()
+                            ->get();
+        });
     }
 
     /**
@@ -446,27 +445,26 @@ class RepositoryService
      */
     public function getRepositoryStats(Repository $repository): array
     {
-        return Cache::tags(['repositories', "repository:{$repository->full_name}"])
-                   ->remember("repository:{$repository->full_name}:stats", 1800, function () use ($repository) {
-                       return [
-                           'total_commits' => $repository->total_commits,
-                           'total_prs_created' => $repository->total_prs_created,
-                           'total_prs_merged' => $repository->total_prs_merged,
-                           'pr_success_rate' => $repository->pr_success_rate,
-                           'last_commit_at' => $repository->last_commit_at,
-                           'last_pr_created_at' => $repository->last_pr_created_at,
-                           'last_synced_at' => $repository->last_synced_at,
-                           'is_stale' => $repository->is_stale,
-                           'framework_detected' => $repository->framework_detected,
-                           'framework_type' => $repository->framework_type,
-                           'ssh_key_status' => $repository->ssh_key_status,
-                           'projects_count' => $repository->projects()->count(),
-                           'active_projects_count' => $repository->activeProjects()->count(),
-                           'tickets_count' => $repository->tickets()->count(),
-                           'pending_tickets' => $repository->tickets()->where('status', 'pending')->count(),
-                           'completed_tickets' => $repository->tickets()->where('status', 'completed')->count()
-                       ];
-                   });
+        return Cache::remember("repository:{$repository->full_name}:stats", 1800, function () use ($repository) {
+            return [
+                'total_commits' => $repository->total_commits,
+                'total_prs_created' => $repository->total_prs_created,
+                'total_prs_merged' => $repository->total_prs_merged,
+                'pr_success_rate' => $repository->pr_success_rate,
+                'last_commit_at' => $repository->last_commit_at,
+                'last_pr_created_at' => $repository->last_pr_created_at,
+                'last_synced_at' => $repository->last_synced_at,
+                'is_stale' => $repository->is_stale,
+                'framework_detected' => $repository->framework_detected,
+                'framework_type' => $repository->framework_type,
+                'ssh_key_status' => $repository->ssh_key_status,
+                'projects_count' => $repository->projects()->count(),
+                'active_projects_count' => $repository->activeProjects()->count(),
+                'tickets_count' => $repository->tickets()->count(),
+                'pending_tickets' => $repository->tickets()->where('status', 'pending')->count(),
+                'completed_tickets' => $repository->tickets()->where('status', 'completed')->count()
+            ];
+        });
     }
 
     /**
@@ -483,30 +481,29 @@ class RepositoryService
      */
     public function getRepositoriesOverview(): array
     {
-        return Cache::tags(['repositories'])
-                   ->remember('repositories:overview', 900, function () {
-                       $repositories = Repository::active()->with(['projects'])->get();
-                       
-                       return $repositories->map(function ($repository) {
-                           return [
-                               'id' => $repository->id,
-                               'full_name' => $repository->full_name,
-                               'provider' => $repository->provider,
-                               'framework_type' => $repository->framework_type,
-                               'bot_enabled' => $repository->bot_enabled,
-                               'is_active' => $repository->is_active,
-                               'ssh_key_deployed' => $repository->ssh_key_deployed,
-                               'ssh_key_status' => $repository->ssh_key_status,
-                               'total_commits' => $repository->total_commits,
-                               'total_prs_created' => $repository->total_prs_created,
-                               'pr_success_rate' => $repository->pr_success_rate,
-                               'last_synced_at' => $repository->last_synced_at,
-                               'is_stale' => $repository->is_stale,
-                               'projects_count' => $repository->projects->count(),
-                               'provider_url' => $repository->provider_url
-                           ];
-                       })->toArray();
-                   });
+        return Cache::remember('repositories:overview', 900, function () {
+            $repositories = Repository::active()->with(['projects'])->get();
+            
+            return $repositories->map(function ($repository) {
+                return [
+                    'id' => $repository->id,
+                    'full_name' => $repository->full_name,
+                    'provider' => $repository->provider,
+                    'framework_type' => $repository->framework_type,
+                    'bot_enabled' => $repository->bot_enabled,
+                    'is_active' => $repository->is_active,
+                    'ssh_key_deployed' => $repository->ssh_key_deployed,
+                    'ssh_key_status' => $repository->ssh_key_status,
+                    'total_commits' => $repository->total_commits,
+                    'total_prs_created' => $repository->total_prs_created,
+                    'pr_success_rate' => $repository->pr_success_rate,
+                    'last_synced_at' => $repository->last_synced_at,
+                    'is_stale' => $repository->is_stale,
+                    'projects_count' => $repository->projects->count(),
+                    'provider_url' => $repository->provider_url
+                ];
+            })->toArray();
+        });
     }
 
     /**

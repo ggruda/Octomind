@@ -72,11 +72,15 @@ class ProviderManager
                 $provider = new $className();
                 $validation = $provider->validateConfiguration();
                 
+                // Korrigiere die Validierung - prüfe auf 'valid' key oder leere errors
+                $isConfigured = isset($validation['valid']) ? $validation['valid'] : empty($validation);
+                $errors = isset($validation['errors']) ? $validation['errors'] : $validation;
+                
                 $providers[$name] = [
                     'name' => $provider->getProviderName(),
                     'class' => $className,
-                    'configured' => empty($validation),
-                    'errors' => $validation,
+                    'configured' => $isConfigured,
+                    'errors' => $errors,
                     'supported_statuses' => $provider->getSupportedStatuses()
                 ];
             } catch (Exception $e) {

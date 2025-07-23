@@ -36,7 +36,9 @@ class Ticket extends Model
         'complexity_score',
         'required_skills',
         'error_message',
-        'retry_count'
+        'retry_count',
+        'project_id',
+        'repository_id'
     ];
 
     protected $casts = [
@@ -223,6 +225,24 @@ class Ticket extends Model
     }
 
     /**
+     * Beziehungen
+     */
+    public function todos()
+    {
+        return $this->hasMany(TicketTodo::class)->orderBy('order_index');
+    }
+
+    public function project()
+    {
+        return $this->belongsTo(Project::class);
+    }
+
+    public function repository()
+    {
+        return $this->belongsTo(Repository::class);
+    }
+
+    /**
      * Static Methods
      */
     public static function findByJiraKey(string $jiraKey): ?self
@@ -243,6 +263,40 @@ class Ticket extends Model
                 ->whereNotNull('processing_duration_seconds')
                 ->avg('processing_duration_seconds')
         ];
+    }
+
+    /**
+     * Markiert das Ticket als fehlgeschlagen
+     */
+    public function markFailed(string $errorMessage = null): bool
+    {
+        return $this->update([
+            'status' => 'failed',
+            'error_message' => $errorMessage,
+            'processing_completed_at' => Carbon::now(),
+        ]);
+    }
+
+    /**
+     * Markiert das Ticket als erfolgreich abgeschlossen
+     */
+    public function markCompleted(): bool
+    {
+        return $this->update([
+            'status' => 'completed',
+            'processing_completed_at' => Carbon::now(),
+        ]);
+    }
+
+    /**
+     * Markiert das Ticket als in Bearbeitung
+     */
+    public function markInProgress(): bool
+    {
+        return $this->update([
+            'status' => 'in_progress',
+            'processing_started_at' => Carbon::now(),
+        ]);
     }
 
     public static function getStaleTickets(): \Illuminate\Database\Eloquent\Collection

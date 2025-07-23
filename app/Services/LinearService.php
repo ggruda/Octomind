@@ -10,17 +10,17 @@ use Exception;
 
 class LinearService implements TicketProviderInterface
 {
-    private ConfigService $config;
+    private string $baseUrl = 'https://api.linear.app/graphql';
+    private ?string $apiKey; // NULLABLE für robuste Konfiguration
     private LogService $logger;
-    private string $apiKey;
-    private string $baseUrl = 'https://api.linear.app';
+    private ConfigService $config;
 
     public function __construct()
     {
         $this->config = ConfigService::getInstance();
         $this->logger = new LogService();
         
-        $this->apiKey = $this->config->get('auth.linear_api_key');
+        $this->apiKey = $this->config->get('auth.linear_api_key'); // Kann null sein
     }
 
     public function fetchTickets(): array

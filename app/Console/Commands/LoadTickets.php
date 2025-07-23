@@ -235,21 +235,21 @@ class LoadTickets extends Command
 
         // 6. Tickets in DB speichern/aktualisieren
         foreach ($providerTickets as $ticketData) {
-            $existingTicket = Ticket::where('jira_key', $ticketData['key'])->first();
+            $existingTicket = Ticket::where('jira_key', $ticketData->key)->first();
 
             if (!$existingTicket) {
                 // Neues Ticket erstellen
                 Ticket::create([
-                    'jira_key' => $ticketData['key'],
-                    'summary' => $ticketData['summary'],
-                    'description' => $ticketData['description'] ?? '',
-                    'jira_status' => $ticketData['status'],
-                    'priority' => $ticketData['priority'] ?? 'Medium',
-                    'assignee' => $ticketData['assignee'] ?? null,
-                    'reporter' => $ticketData['reporter'] ?? null,
-                    'labels' => $ticketData['labels'] ?? [],
-                    'jira_created_at' => Carbon::parse($ticketData['created']),
-                    'jira_updated_at' => Carbon::parse($ticketData['updated']),
+                    'jira_key' => $ticketData->key,
+                    'summary' => $ticketData->summary,
+                    'description' => $ticketData->description ?? '',
+                    'jira_status' => $ticketData->status,
+                    'priority' => $ticketData->priority ?? 'Medium',
+                    'assignee' => $ticketData->assignee ?? null,
+                    'reporter' => $ticketData->reporter ?? null,
+                    'labels' => $ticketData->labels ?? [],
+                    'jira_created_at' => Carbon::parse($ticketData->created),
+                    'jira_updated_at' => Carbon::parse($ticketData->updated),
                     'project_id' => $project->id,
                     'status' => 'pending'
                 ]);
@@ -259,18 +259,18 @@ class LoadTickets extends Command
             } else {
                 // Existierendes Ticket aktualisieren (falls Änderungen)
                 $updated = $existingTicket->update([
-                    'summary' => $ticketData['summary'],
-                    'description' => $ticketData['description'] ?? '',
-                    'jira_status' => $ticketData['status'],
-                    'priority' => $ticketData['priority'] ?? 'Medium',
-                    'assignee' => $ticketData['assignee'] ?? null,
-                    'labels' => $ticketData['labels'] ?? [],
-                    'jira_updated_at' => Carbon::parse($ticketData['updated'])
+                    'summary' => $ticketData->summary,
+                    'description' => $ticketData->description ?? '',
+                    'jira_status' => $ticketData->status,
+                    'priority' => $ticketData->priority ?? 'Medium',
+                    'assignee' => $ticketData->assignee ?? null,
+                    'labels' => $ticketData->labels ?? [],
+                    'jira_updated_at' => Carbon::parse($ticketData->updated)
                 ]);
 
                 if ($updated) {
                     $this->logger->debug('Ticket aktualisiert', [
-                        'ticket_key' => $ticketData['key']
+                        'ticket_key' => $ticketData->key
                     ]);
                 }
             }

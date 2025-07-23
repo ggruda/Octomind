@@ -229,13 +229,12 @@ class ProjectService
      */
     public function getProjectsNeedingSync(): Collection
     {
-        return Cache::tags(['projects'])
-                   ->remember('projects:needing_sync', 300, function () {
-                       return Project::active()
-                                   ->botEnabled()
-                                   ->needingSync()
-                                   ->get();
-                   });
+        return Cache::remember('projects:needing_sync', 300, function () {
+            return Project::active()
+                        ->botEnabled()
+                        ->needingSync()
+                        ->get();
+        });
     }
 
     /**
@@ -297,24 +296,23 @@ class ProjectService
      */
     public function getProjectStats(Project $project): array
     {
-        return Cache::tags(['projects', "project:{$project->jira_key}"])
-                   ->remember("project:{$project->jira_key}:stats", 1800, function () use ($project) {
-                       return [
-                           'total_tickets' => $project->total_tickets_processed,
-                           'successful_tickets' => $project->successful_tickets,
-                           'failed_tickets' => $project->failed_tickets,
-                           'success_rate' => $project->success_rate,
-                           'failure_rate' => $project->failure_rate,
-                           'last_sync_at' => $project->last_sync_at,
-                           'is_stale' => $project->is_stale,
-                           'repositories_count' => $project->repositories()->count(),
-                           'active_repositories_count' => $project->activeRepositories()->count(),
-                           'pending_tickets' => $project->tickets()->where('status', 'pending')->count(),
-                           'in_progress_tickets' => $project->tickets()->where('status', 'in_progress')->count(),
-                           'completed_tickets' => $project->tickets()->where('status', 'completed')->count(),
-                           'failed_tickets_count' => $project->tickets()->where('status', 'failed')->count()
-                       ];
-                   });
+        return Cache::remember("project:{$project->jira_key}:stats", 1800, function () use ($project) {
+            return [
+                'total_tickets' => $project->total_tickets_processed,
+                'successful_tickets' => $project->successful_tickets,
+                'failed_tickets' => $project->failed_tickets,
+                'success_rate' => $project->success_rate,
+                'failure_rate' => $project->failure_rate,
+                'last_sync_at' => $project->last_sync_at,
+                'is_stale' => $project->is_stale,
+                'repositories_count' => $project->repositories()->count(),
+                'active_repositories_count' => $project->activeRepositories()->count(),
+                'pending_tickets' => $project->tickets()->where('status', 'pending')->count(),
+                'in_progress_tickets' => $project->tickets()->where('status', 'in_progress')->count(),
+                'completed_tickets' => $project->tickets()->where('status', 'completed')->count(),
+                'failed_tickets_count' => $project->tickets()->where('status', 'failed')->count()
+            ];
+        });
     }
 
     /**
@@ -388,30 +386,38 @@ class ProjectService
     }
 
     /**
-     * Holt Übersicht aller Projekte
+     * Holt Übersicht aller Projekte - PRODUKTIONSREIF
      */
     public function getProjectsOverview(): array
     {
-        return Cache::tags(['projects'])
-                   ->remember('projects:overview', 900, function () {
-                       $projects = Project::active()->with(['defaultRepository', 'repositories'])->get();
-                       
-                       return $projects->map(function ($project) {
-                           return [
-                               'id' => $project->id,
-                               'jira_key' => $project->jira_key,
-                               'name' => $project->name,
-                               'bot_enabled' => $project->bot_enabled,
-                               'is_active' => $project->is_active,
-                               'total_tickets' => $project->total_tickets_processed,
-                               'success_rate' => $project->success_rate,
-                               'last_sync_at' => $project->last_sync_at,
-                               'is_stale' => $project->is_stale,
-                               'repositories_count' => $project->repositories->count(),
-                               'default_repository' => $project->defaultRepository?->full_name,
-                               'jira_url' => $project->jira_url
-                           ];
-                       })->toArray();
-                   });
+        // KEIN CACHE - direkt aus DB für Zuverlässigkeit
+        $projects = Project::with(['repositories', 'tickets'])
+                          ->orderBy('name')
+                          ->get();
+
+        $overview = [];
+        foreach ($projects as $project) {
+            $overview[] = [
+                'id' => $project->id,
+                'jira_key' => $project->jira_key,
+                'name' => $project->name,
+                'description' => $project->description,
+                'jira_base_url' => $project->jira_base_url,
+                'bot_enabled' => $project->bot_enabled,
+                'is_active' => $project->is_active,
+                'repositories_count' => $project->repositories->count(),
+                'tickets_count' => $project->tickets->count(),
+                'last_sync_at' => $project->last_sync_at?->toISOString(),
+                'total_tickets_processed' => $project->total_tickets_processed,
+                'successful_tickets' => $project->successful_tickets,
+                'failed_tickets' => $project->failed_tickets,
+                'success_rate' => $project->success_rate,
+                'failure_rate' => $project->failure_rate,
+                'jira_url' => $project->jira_url,
+                'is_stale' => $project->is_stale,
+            ];
+        }
+
+        return $overview;
     }
 } 

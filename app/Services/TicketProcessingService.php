@@ -6,10 +6,12 @@ use App\DTOs\TicketDTO;
 use App\Models\Ticket;
 use App\Models\Project;
 use App\Models\Repository;
+use App\Models\TicketTodo;
 use App\Services\KnowledgeBaseService;
 use App\Services\CodeReviewService;
 use App\Services\ProjectService;
 use App\Services\RepositoryService;
+use App\Services\TicketAnalysisService;
 use Carbon\Carbon;
 use Exception;
 
@@ -26,6 +28,7 @@ class TicketProcessingService
     private RepositoryInitializationService $repoInit;
     private ProjectService $projectService;
     private RepositoryService $repositoryService;
+    private TicketAnalysisService $ticketAnalysis;
 
     public function __construct()
     {
@@ -40,6 +43,7 @@ class TicketProcessingService
         $this->repoInit = new RepositoryInitializationService();
         $this->projectService = new ProjectService();
         $this->repositoryService = new RepositoryService();
+        $this->ticketAnalysis = new TicketAnalysisService();
     }
 
     /**
@@ -65,10 +69,24 @@ class TicketProcessingService
             // 3. Projekt und Repository aus DB auflösen
             $this->resolveProjectAndRepository($ticketModel, $ticketDTO);
             
-            // 4. Repository initialisieren/synchronisieren
+            // 4. 🧠 INTELLIGENTE TICKET-ANALYSE UND TODO-ERSTELLUNG
+            $analysisResult = $this->ticketAnalysis->analyzeAndCreateTodos($ticketDTO);
+            
+            if ($analysisResult['requires_breakdown']) {
+                $this->logger->info('🎯 Ticket wurde in TODOs aufgespalten', [
+                    'ticket_key' => $ticketKey,
+                    'todos_created' => $analysisResult['todos_created'],
+                    'complexity_level' => $analysisResult['complexity']['level']
+                ]);
+                
+                // Verarbeite Ticket TODO-basiert
+                return $this->processTodoBasedTicket($ticketModel, $ticketDTO, $analysisResult);
+            }
+            
+            // 5. Repository initialisieren/synchronisieren
             $this->ensureRepositoryReady($ticketModel->repository);
             
-            // 5. IMMER neuen Branch erstellen
+            // 6. IMMER neuen Branch erstellen
             $this->ensureCleanBranch($ticketDTO, $ticketModel->repository);
             
             // 6. Knowledge-Base aktualisieren
@@ -661,6 +679,366 @@ class TicketProcessingService
         }
 
         return $outputString;
+    }
+
+    /**
+     * Verarbeitet Ticket TODO-basiert für komplexe Tickets
+     */
+    private function processTodoBasedTicket(Ticket $ticketModel, TicketDTO $ticketDTO, array $analysisResult): array
+    {
+        $this->logger->info('🎯 Starte TODO-basierte Ticket-Verarbeitung', [
+            'ticket_key' => $ticketDTO->key,
+            'todos_count' => $analysisResult['todos_created']
+        ]);
+
+        try {
+            // Repository vorbereiten
+            $this->ensureRepositoryReady($ticketModel->repository);
+            $this->ensureCleanBranch($ticketDTO, $ticketModel->repository);
+
+            $processedTodos = 0;
+            $failedTodos = 0;
+            $allResults = [];
+
+            // Verarbeite TODOs sequenziell basierend auf Priorität und Abhängigkeiten
+            while (true) {
+                $nextTodo = TicketTodo::getNextAvailableTodo($ticketModel->id);
+                
+                if (!$nextTodo) {
+                    // Keine weiteren TODOs verfügbar
+                    break;
+                }
+
+                $this->logger->info('🔄 Verarbeite nächstes TODO', [
+                    'ticket_key' => $ticketDTO->key,
+                    'todo_id' => $nextTodo->id,
+                    'todo_title' => $nextTodo->title,
+                    'priority' => $nextTodo->priority
+                ]);
+
+                // TODO verarbeiten
+                $todoResult = $this->processSingleTodo($ticketDTO, $nextTodo, $ticketModel->repository);
+                
+                if ($todoResult['success']) {
+                    $processedTodos++;
+                    $allResults[] = $todoResult;
+                    
+                    $this->logger->info('✅ TODO erfolgreich abgeschlossen', [
+                        'ticket_key' => $ticketDTO->key,
+                        'todo_title' => $nextTodo->title,
+                        'duration' => $todoResult['duration'] ?? 'N/A'
+                    ]);
+                } else {
+                    $failedTodos++;
+                    $nextTodo->failProcessing($todoResult['error'] ?? 'Unbekannter Fehler');
+                    
+                    $this->logger->error('❌ TODO fehlgeschlagen', [
+                        'ticket_key' => $ticketDTO->key,
+                        'todo_title' => $nextTodo->title,
+                        'error' => $todoResult['error'] ?? 'Unbekannter Fehler'
+                    ]);
+
+                    // Bei kritischen TODOs (Priorität 1-2) Verarbeitung stoppen
+                    if ($nextTodo->priority <= 2) {
+                        $this->logger->warning('🚨 Kritisches TODO fehlgeschlagen - stoppe Verarbeitung', [
+                            'ticket_key' => $ticketDTO->key,
+                            'todo_title' => $nextTodo->title
+                        ]);
+                        break;
+                    }
+                }
+            }
+
+            // Gesamtergebnis bewerten
+            $progressStats = TicketTodo::getProgressStats($ticketModel->id);
+            $success = $progressStats['progress_percentage'] >= 80; // 80% der TODOs müssen erfolgreich sein
+
+            if ($success) {
+                // Pull Request mit allen Änderungen erstellen
+                $prResult = $this->createConsolidatedPullRequest($ticketDTO, $allResults, $ticketModel->repository);
+                
+                if ($prResult['success']) {
+                    $processingTime = Carbon::now()->diffInSeconds($ticketModel->processing_started_at);
+                    $ticketModel->markCompleted($processingTime, $prResult['pr_url'], $prResult['pr_number'], $prResult['commit_hash']);
+                    
+                    $this->updateJiraTicket($ticketDTO, $prResult);
+                }
+
+                return [
+                    'success' => true,
+                    'processing_type' => 'todo_based',
+                    'todos_processed' => $processedTodos,
+                    'todos_failed' => $failedTodos,
+                    'progress_stats' => $progressStats,
+                    'pr_result' => $prResult ?? null,
+                    'analysis_result' => $analysisResult
+                ];
+            } else {
+                throw new Exception("Zu viele TODOs fehlgeschlagen. Fortschritt: {$progressStats['progress_percentage']}%");
+            }
+
+        } catch (Exception $e) {
+            $ticketModel->failProcessing("TODO-basierte Verarbeitung fehlgeschlagen: " . $e->getMessage());
+            
+            return [
+                'success' => false,
+                'processing_type' => 'todo_based',
+                'error' => $e->getMessage(),
+                'todos_processed' => $processedTodos ?? 0,
+                'todos_failed' => $failedTodos ?? 0
+            ];
+        }
+    }
+
+    /**
+     * Verarbeitet ein einzelnes TODO
+     */
+    private function processSingleTodo(TicketDTO $ticket, TicketTodo $todo, Repository $repository): array
+    {
+        $startTime = Carbon::now();
+        
+        try {
+            $todo->startProcessing();
+
+            // 1. Spezialisierten Prompt für dieses TODO erstellen
+            $prompt = $this->buildTodoSpecificPrompt($ticket, $todo, $repository);
+
+            // 2. AI-Lösung für dieses spezifische TODO generieren
+            $aiSolution = $this->aiService->generateSolution($prompt);
+            
+            if (!$aiSolution['success']) {
+                throw new Exception('AI-Lösungsgenerierung für TODO fehlgeschlagen: ' . $aiSolution['error']);
+            }
+
+            // 3. Code-Änderungen für dieses TODO ausführen
+            $executionResult = $this->aiService->executeCode($ticket, $aiSolution);
+            
+            if (!$executionResult['success']) {
+                throw new Exception('TODO-Code-Ausführung fehlgeschlagen: ' . $executionResult['error']);
+            }
+
+            // 4. TODO-spezifische Code-Review
+            $reviewResult = $this->codeReview->performCodeReview($ticket, $executionResult['changes']);
+
+            // 5. Commit für dieses TODO
+            $commitResult = $this->commitTodoChanges($ticket, $todo, $executionResult, $repository);
+
+            // 6. TODO als abgeschlossen markieren
+            $processingTime = Carbon::now()->diffInSeconds($startTime);
+            $todo->completeProcessing([
+                'branch_name' => $commitResult['branch_name'] ?? null,
+                'commit_hash' => $commitResult['commit_hash'] ?? null,
+                'code_changes' => $this->summarizeChanges($executionResult['changes']),
+                'actual_hours' => $processingTime / 3600
+            ]);
+
+            return [
+                'success' => true,
+                'todo_id' => $todo->id,
+                'ai_solution' => $aiSolution,
+                'execution_result' => $executionResult,
+                'review_result' => $reviewResult,
+                'commit_result' => $commitResult,
+                'duration' => $processingTime
+            ];
+
+        } catch (Exception $e) {
+            return [
+                'success' => false,
+                'todo_id' => $todo->id,
+                'error' => $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Erstellt TODO-spezifischen Prompt
+     */
+    private function buildTodoSpecificPrompt(TicketDTO $ticket, TicketTodo $todo, Repository $repository): string
+    {
+        $prompt = "# 🎯 EINZELNES TODO IMPLEMENTIEREN\n\n";
+        
+        $prompt .= "## 📋 TICKET-KONTEXT:\n";
+        $prompt .= "**Ticket:** {$ticket->key} - {$ticket->summary}\n";
+        $prompt .= "**Repository:** {$repository->full_name}\n\n";
+        
+        $prompt .= "## 🎯 SPEZIFISCHES TODO:\n";
+        $prompt .= "**Titel:** {$todo->title}\n";
+        $prompt .= "**Beschreibung:** {$todo->description}\n";
+        $prompt .= "**Kategorie:** {$todo->category_icon} {$todo->category}\n";
+        $prompt .= "**Priorität:** {$todo->priority_label} (Level {$todo->priority})\n";
+        $prompt .= "**Geschätzte Zeit:** {$todo->estimated_hours}h\n\n";
+
+        if (!empty($todo->acceptance_criteria)) {
+            $prompt .= "## ✅ AKZEPTANZKRITERIEN:\n";
+            foreach ($todo->acceptance_criteria as $criterion) {
+                $prompt .= "- {$criterion}\n";
+            }
+            $prompt .= "\n";
+        }
+
+        if (!empty($todo->dependencies)) {
+            $prompt .= "## 🔗 ABHÄNGIGKEITEN (bereits abgeschlossen):\n";
+            foreach ($todo->dependencies as $dependency) {
+                $prompt .= "- {$dependency}\n";
+            }
+            $prompt .= "\n";
+        }
+
+        $prompt .= "## 🎯 DEINE AUFGABE:\n";
+        $prompt .= "Implementiere **NUR** dieses spezifische TODO. Konzentriere dich ausschließlich auf:\n";
+        $prompt .= "- Die beschriebene Funktionalität\n";
+        $prompt .= "- Die Akzeptanzkriterien\n";
+        $prompt .= "- Sauberen, testbaren Code\n";
+        $prompt .= "- Minimale, fokussierte Änderungen\n\n";
+
+        $prompt .= "**WICHTIG:** Implementiere nicht das gesamte Ticket, sondern nur diesen einen TODO-Punkt!\n\n";
+
+        // Repository-Kontext hinzufügen
+        $prompt .= $this->buildRepositoryContext($ticket);
+
+        return $prompt;
+    }
+
+    /**
+     * Erstellt Commit für einzelnes TODO
+     */
+    private function commitTodoChanges(TicketDTO $ticket, TicketTodo $todo, array $executionResult, Repository $repository): array
+    {
+        $workingDir = $repository->local_path;
+        
+        // Commit-Message für TODO
+        $commitMessage = "[{$ticket->key}] {$todo->title}\n\n";
+        $commitMessage .= "TODO #{$todo->order_index}: {$todo->description}\n";
+        $commitMessage .= "Kategorie: {$todo->category}\n";
+        $commitMessage .= "Priorität: {$todo->priority_label}\n";
+        
+        if (!empty($todo->acceptance_criteria)) {
+            $commitMessage .= "\nAkzeptanzkriterien:\n";
+            foreach ($todo->acceptance_criteria as $criterion) {
+                $commitMessage .= "- {$criterion}\n";
+            }
+        }
+
+        // Git-Operationen
+        $this->runGitCommand($workingDir, 'add .');
+        $commitHash = $this->runGitCommand($workingDir, "commit -m " . escapeshellarg($commitMessage));
+        
+        return [
+            'commit_hash' => trim(str_replace('commit ', '', $commitHash)),
+            'commit_message' => $commitMessage,
+            'branch_name' => $ticket->getBranchName()
+        ];
+    }
+
+    /**
+     * Erstellt konsolidierten Pull Request für alle TODOs
+     */
+    private function createConsolidatedPullRequest(TicketDTO $ticket, array $allResults, Repository $repository): array
+    {
+        try {
+            $workingDir = $repository->local_path;
+            $branchName = $ticket->getBranchName();
+            
+            // Push aller Commits
+            $this->runGitCommand($workingDir, "push origin {$branchName}");
+
+            // PR-Beschreibung mit TODO-Zusammenfassung
+            $prDescription = $this->buildTodoPullRequestDescription($ticket, $allResults);
+
+            // Pull Request erstellen
+            $prResult = $this->githubService->createPullRequest(
+                $repository->owner,
+                $repository->name,
+                $branchName,
+                'main',
+                "[{$ticket->key}] {$ticket->summary}",
+                $prDescription
+            );
+
+            if ($prResult['success']) {
+                return [
+                    'success' => true,
+                    'pr_url' => $prResult['pr_url'],
+                    'pr_number' => $prResult['pr_number'],
+                    'commit_hash' => $allResults[count($allResults) - 1]['commit_result']['commit_hash'] ?? null
+                ];
+            }
+
+            return [
+                'success' => false,
+                'error' => $prResult['error'] ?? 'PR-Erstellung fehlgeschlagen'
+            ];
+
+        } catch (Exception $e) {
+            return [
+                'success' => false,
+                'error' => $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Erstellt PR-Beschreibung mit TODO-Zusammenfassung
+     */
+    private function buildTodoPullRequestDescription(TicketDTO $ticket, array $allResults): string
+    {
+        $description = "## 🎯 Ticket-Implementierung mit AI-generierten TODOs\n\n";
+        $description .= "**Jira-Ticket:** [{$ticket->key}]({$ticket->getJiraUrl()})\n";
+        $description .= "**Zusammenfassung:** {$ticket->summary}\n\n";
+
+        if (!empty($ticket->description)) {
+            $description .= "**Beschreibung:**\n{$ticket->description}\n\n";
+        }
+
+        $description .= "## 📋 Abgeschlossene TODOs:\n\n";
+        
+        foreach ($allResults as $index => $result) {
+            $todoNum = $index + 1;
+            $description .= "### ✅ TODO #{$todoNum}\n";
+            
+            if (isset($result['commit_result']['commit_message'])) {
+                $lines = explode("\n", $result['commit_result']['commit_message']);
+                $title = trim(str_replace("[{$ticket->key}] ", "", $lines[0]));
+                $description .= "**{$title}**\n\n";
+                
+                if (isset($lines[2])) {
+                    $description .= $lines[2] . "\n\n";
+                }
+            }
+            
+            if (isset($result['commit_result']['commit_hash'])) {
+                $description .= "**Commit:** `{$result['commit_result']['commit_hash']}`\n\n";
+            }
+        }
+
+        $description .= "---\n";
+        $description .= "*Diese Implementierung wurde automatisch durch Octomind Bot erstellt.*\n";
+        $description .= "*Alle TODOs wurden durch AI-Analyse des ursprünglichen Tickets generiert.*";
+
+        return $description;
+    }
+
+    /**
+     * Fasst Code-Änderungen zusammen
+     */
+    private function summarizeChanges(array $changes): string
+    {
+        if (empty($changes['files'])) {
+            return 'Keine Änderungen';
+        }
+
+        $summary = [];
+        foreach ($changes['files'] as $file) {
+            $filename = basename($file['path'] ?? 'unknown');
+            $linesAdded = $file['lines_added'] ?? 0;
+            $linesRemoved = $file['lines_removed'] ?? 0;
+            
+            $summary[] = "{$filename} (+{$linesAdded}/-{$linesRemoved})";
+        }
+
+        return implode(', ', array_slice($summary, 0, 5)) . 
+               (count($summary) > 5 ? " und " . (count($summary) - 5) . " weitere" : "");
     }
 
     /**
