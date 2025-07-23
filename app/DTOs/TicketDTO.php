@@ -2,163 +2,284 @@
 
 namespace App\DTOs;
 
-use App\Enums\TicketStatus;
 use Carbon\Carbon;
 
 class TicketDTO
 {
     public function __construct(
         public readonly string $key,
-        public readonly string $projectKey,
         public readonly string $summary,
         public readonly string $description,
-        public readonly TicketStatus $status,
+        public readonly string $status,
+        public readonly string $priority,
         public readonly ?string $assignee,
-        public readonly ?string $linkedRepository,
+        public readonly string $reporter,
+        public readonly Carbon $created,
+        public readonly Carbon $updated,
         public readonly array $labels,
-        public readonly array $components,
-        public readonly ?string $priority,
-        public readonly ?string $issueType,
-        public readonly Carbon $createdAt,
-        public readonly Carbon $updatedAt,
-        public readonly array $customFields = [],
-        public readonly array $attachments = [],
-        public readonly array $comments = []
+        public readonly ?string $repositoryUrl
     ) {}
 
-    public static function fromJiraResponse(array $issue): self
-    {
-        $fields = $issue['fields'] ?? [];
-        
-        return new self(
-            key: $issue['key'],
-            projectKey: $fields['project']['key'] ?? '',
-            summary: $fields['summary'] ?? '',
-            description: $fields['description'] ?? '',
-            status: TicketStatus::PENDING,
-            assignee: $fields['assignee']['displayName'] ?? null,
-            linkedRepository: self::extractLinkedRepository($fields),
-            labels: $fields['labels'] ?? [],
-            components: array_map(fn($c) => $c['name'], $fields['components'] ?? []),
-            priority: $fields['priority']['name'] ?? null,
-            issueType: $fields['issuetype']['name'] ?? null,
-            createdAt: Carbon::parse($fields['created']),
-            updatedAt: Carbon::parse($fields['updated']),
-            customFields: self::extractCustomFields($fields),
-            attachments: self::extractAttachments($fields),
-            comments: self::extractComments($fields)
-        );
-    }
-
-    private static function extractLinkedRepository(array $fields): ?string
-    {
-        // Check for custom field that contains repository information
-        foreach ($fields as $key => $value) {
-            if (str_contains(strtolower($key), 'repository') || str_contains(strtolower($key), 'repo')) {
-                if (is_string($value) && !empty($value)) {
-                    return $value;
-                }
-            }
-        }
-
-        // Check in description for GitHub/GitLab URLs
-        $description = $fields['description'] ?? '';
-        if (preg_match('/https:\/\/github\.com\/([^\/]+\/[^\/\s]+)/', $description, $matches)) {
-            return $matches[1];
-        }
-
-        if (preg_match('/https:\/\/gitlab\.com\/([^\/]+\/[^\/\s]+)/', $description, $matches)) {
-            return $matches[1];
-        }
-
-        return null;
-    }
-
-    private static function extractCustomFields(array $fields): array
-    {
-        $customFields = [];
-        
-        foreach ($fields as $key => $value) {
-            if (str_starts_with($key, 'customfield_')) {
-                $customFields[$key] = $value;
-            }
-        }
-        
-        return $customFields;
-    }
-
-    private static function extractAttachments(array $fields): array
-    {
-        $attachments = [];
-        
-        if (isset($fields['attachment']) && is_array($fields['attachment'])) {
-            foreach ($fields['attachment'] as $attachment) {
-                $attachments[] = [
-                    'id' => $attachment['id'] ?? null,
-                    'filename' => $attachment['filename'] ?? null,
-                    'size' => $attachment['size'] ?? null,
-                    'mimeType' => $attachment['mimeType'] ?? null,
-                    'content' => $attachment['content'] ?? null,
-                ];
-            }
-        }
-        
-        return $attachments;
-    }
-
-    private static function extractComments(array $fields): array
-    {
-        $comments = [];
-        
-        if (isset($fields['comment']['comments']) && is_array($fields['comment']['comments'])) {
-            foreach ($fields['comment']['comments'] as $comment) {
-                $comments[] = [
-                    'id' => $comment['id'] ?? null,
-                    'author' => $comment['author']['displayName'] ?? null,
-                    'body' => $comment['body'] ?? null,
-                    'created' => isset($comment['created']) ? Carbon::parse($comment['created']) : null,
-                    'updated' => isset($comment['updated']) ? Carbon::parse($comment['updated']) : null,
-                ];
-            }
-        }
-        
-        return $comments;
-    }
-
+    /**
+     * Überprüft ob das Ticket das erforderliche Label hat
+     */
     public function hasRequiredLabel(string $requiredLabel): bool
     {
         return in_array($requiredLabel, $this->labels);
     }
 
+    /**
+     * Überprüft ob das Ticket unassigned ist
+     */
     public function isUnassigned(): bool
     {
-        return $this->assignee === null;
+        return empty($this->assignee);
     }
 
+    /**
+     * Überprüft ob das Ticket ein verknüpftes Repository hat
+     */
     public function hasLinkedRepository(): bool
     {
-        return $this->linkedRepository !== null;
+        return !empty($this->repositoryUrl);
     }
 
+    /**
+     * Extrahiert Repository-Owner und -Name aus der URL
+     */
+    public function getRepositoryInfo(): ?array
+    {
+        if (!$this->repositoryUrl) {
+            return null;
+        }
+
+        // GitHub URL Pattern: https://github.com/owner/repo
+        if (preg_match('/github\.com\/([^\/]+)\/([^\/\s]+)/', $this->repositoryUrl, $matches)) {
+            return [
+                'owner' => $matches[1],
+                'name' => $matches[2],
+                'full_name' => $matches[1] . '/' . $matches[2],
+                'url' => $this->repositoryUrl
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * Generiert einen Branch-Namen basierend auf dem Ticket
+     */
+    public function generateBranchName(): string
+    {
+        $branchName = 'feature/' . strtolower($this->key);
+        
+        // Füge einen sauberen Summary-Teil hinzu
+        $cleanSummary = preg_replace('/[^a-zA-Z0-9\s]/', '', $this->summary);
+        $cleanSummary = preg_replace('/\s+/', '-', trim($cleanSummary));
+        $cleanSummary = strtolower(substr($cleanSummary, 0, 30));
+        
+        if ($cleanSummary) {
+            $branchName .= '-' . $cleanSummary;
+        }
+
+        return $branchName;
+    }
+
+    /**
+     * Generiert einen PR-Titel basierend auf dem Ticket
+     */
+    public function generatePRTitle(): string
+    {
+        return "[{$this->key}] {$this->summary}";
+    }
+
+    /**
+     * Generiert eine PR-Beschreibung basierend auf dem Ticket
+     */
+    public function generatePRDescription(): string
+    {
+        $description = "## Automatische Lösung für Jira-Ticket\n\n";
+        $description .= "**Ticket:** [{$this->key}]({$this->getJiraUrl()})\n";
+        $description .= "**Titel:** {$this->summary}\n\n";
+        
+        if ($this->description) {
+            $description .= "### Beschreibung:\n";
+            $description .= $this->description . "\n\n";
+        }
+
+        $description .= "### Details:\n";
+        $description .= "- **Status:** {$this->status}\n";
+        $description .= "- **Priorität:** {$this->priority}\n";
+        $description .= "- **Reporter:** {$this->reporter}\n";
+        
+        if (!empty($this->labels)) {
+            $description .= "- **Labels:** " . implode(', ', $this->labels) . "\n";
+        }
+
+        $description .= "\n---\n";
+        $description .= "*Diese PR wurde automatisch vom Octomind Bot erstellt.*";
+
+        return $description;
+    }
+
+    /**
+     * Generiert die Jira-URL für das Ticket
+     */
+    public function getJiraUrl(): string
+    {
+        // Diese URL wird vom ConfigService bereitgestellt
+        $baseUrl = config('services.jira.base_url', env('JIRA_BASE_URL'));
+        return rtrim($baseUrl, '/') . '/browse/' . $this->key;
+    }
+
+    /**
+     * Schätzt die Komplexität des Tickets basierend auf verschiedenen Faktoren
+     */
+    public function estimateComplexity(): string
+    {
+        $score = 0;
+
+        // Basierend auf Beschreibungslänge
+        $descriptionLength = strlen($this->description);
+        if ($descriptionLength > 1000) {
+            $score += 3;
+        } elseif ($descriptionLength > 500) {
+            $score += 2;
+        } elseif ($descriptionLength > 100) {
+            $score += 1;
+        }
+
+        // Basierend auf Priorität
+        switch (strtolower($this->priority)) {
+            case 'critical':
+            case 'highest':
+                $score += 3;
+                break;
+            case 'high':
+                $score += 2;
+                break;
+            case 'medium':
+                $score += 1;
+                break;
+            case 'low':
+            case 'lowest':
+                $score += 0;
+                break;
+        }
+
+        // Basierend auf Keywords in Titel/Beschreibung
+        $content = strtolower($this->summary . ' ' . $this->description);
+        $complexKeywords = ['refactor', 'architecture', 'migration', 'database', 'security', 'performance'];
+        $simpleKeywords = ['fix', 'update', 'change', 'add', 'remove'];
+
+        foreach ($complexKeywords as $keyword) {
+            if (strpos($content, $keyword) !== false) {
+                $score += 2;
+            }
+        }
+
+        foreach ($simpleKeywords as $keyword) {
+            if (strpos($content, $keyword) !== false) {
+                $score += 1;
+            }
+        }
+
+        // Komplexitätsbewertung
+        if ($score >= 8) {
+            return 'very_high';
+        } elseif ($score >= 6) {
+            return 'high';
+        } elseif ($score >= 4) {
+            return 'medium';
+        } elseif ($score >= 2) {
+            return 'low';
+        } else {
+            return 'very_low';
+        }
+    }
+
+    /**
+     * Identifiziert die wahrscheinlich benötigten Technologien/Skills
+     */
+    public function identifyRequiredSkills(): array
+    {
+        $content = strtolower($this->summary . ' ' . $this->description);
+        $skills = [];
+
+        // Programming Languages
+        $languages = [
+            'php' => ['php', 'laravel', 'symfony', 'composer'],
+            'javascript' => ['javascript', 'js', 'node', 'npm', 'yarn'],
+            'typescript' => ['typescript', 'ts'],
+            'python' => ['python', 'django', 'flask', 'pip'],
+            'java' => ['java', 'spring', 'maven', 'gradle'],
+            'csharp' => ['c#', 'csharp', '.net', 'dotnet'],
+            'go' => ['golang', 'go'],
+            'rust' => ['rust', 'cargo'],
+        ];
+
+        foreach ($languages as $language => $keywords) {
+            foreach ($keywords as $keyword) {
+                if (strpos($content, $keyword) !== false) {
+                    $skills[] = $language;
+                    break;
+                }
+            }
+        }
+
+        // Frameworks & Technologies
+        $technologies = [
+            'database' => ['database', 'mysql', 'postgresql', 'sqlite', 'mongodb', 'redis'],
+            'frontend' => ['react', 'vue', 'angular', 'html', 'css', 'scss', 'tailwind'],
+            'api' => ['api', 'rest', 'graphql', 'endpoint'],
+            'docker' => ['docker', 'container', 'kubernetes'],
+            'testing' => ['test', 'testing', 'phpunit', 'jest', 'cypress'],
+            'security' => ['security', 'auth', 'authentication', 'authorization'],
+        ];
+
+        foreach ($technologies as $tech => $keywords) {
+            foreach ($keywords as $keyword) {
+                if (strpos($content, $keyword) !== false) {
+                    $skills[] = $tech;
+                    break;
+                }
+            }
+        }
+
+        return array_unique($skills);
+    }
+
+    /**
+     * Konvertiert das DTO zu einem Array
+     */
     public function toArray(): array
     {
         return [
             'key' => $this->key,
-            'project_key' => $this->projectKey,
             'summary' => $this->summary,
             'description' => $this->description,
-            'status' => $this->status->value,
-            'assignee' => $this->assignee,
-            'linked_repository' => $this->linkedRepository,
-            'labels' => $this->labels,
-            'components' => $this->components,
+            'status' => $this->status,
             'priority' => $this->priority,
-            'issue_type' => $this->issueType,
-            'created_at' => $this->createdAt->toISOString(),
-            'updated_at' => $this->updatedAt->toISOString(),
-            'custom_fields' => $this->customFields,
-            'attachments' => $this->attachments,
-            'comments' => $this->comments,
+            'assignee' => $this->assignee,
+            'reporter' => $this->reporter,
+            'created' => $this->created->toISOString(),
+            'updated' => $this->updated->toISOString(),
+            'labels' => $this->labels,
+            'repository_url' => $this->repositoryUrl,
+            'repository_info' => $this->getRepositoryInfo(),
+            'complexity' => $this->estimateComplexity(),
+            'required_skills' => $this->identifyRequiredSkills(),
+            'branch_name' => $this->generateBranchName(),
+            'pr_title' => $this->generatePRTitle(),
+            'jira_url' => $this->getJiraUrl(),
         ];
+    }
+
+    /**
+     * Erstellt eine JSON-Repräsentation
+     */
+    public function toJson(): string
+    {
+        return json_encode($this->toArray(), JSON_PRETTY_PRINT);
     }
 } 

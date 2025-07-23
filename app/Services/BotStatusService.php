@@ -218,17 +218,48 @@ class BotStatusService
             ];
         }
 
-        // GitHub-Verbindung würde hier getestet werden
-        $services['github'] = [
-            'status' => 'healthy', // Placeholder
-            'message' => 'GitHub-API erreichbar'
-        ];
+        // GitHub-Verbindung testen
+        try {
+            $githubService = new GitHubService();
+            $githubResult = $githubService->testConnection();
+            $services['github'] = [
+                'status' => $githubResult['success'] ? 'healthy' : 'critical',
+                'message' => $githubResult['message'],
+                'response_time_ms' => $githubResult['response_time_ms'] ?? 0
+            ];
+        } catch (Exception $e) {
+            $services['github'] = [
+                'status' => 'critical',
+                'message' => 'GitHub-Service nicht verfügbar: ' . $e->getMessage()
+            ];
+        }
 
-        // AI-Provider würden hier getestet werden
-        $services['openai'] = [
-            'status' => 'healthy', // Placeholder
-            'message' => 'OpenAI-API erreichbar'
-        ];
+        // AI-Provider testen
+        try {
+            $aiService = new CloudAIService();
+            $aiResults = $aiService->testConnections();
+            
+            $services['openai'] = [
+                'status' => $aiResults['openai']['success'] ? 'healthy' : 'critical',
+                'message' => $aiResults['openai']['message'],
+                'response_time_ms' => $aiResults['openai']['response_time_ms'] ?? 0
+            ];
+            
+            $services['claude'] = [
+                'status' => $aiResults['claude']['success'] ? 'healthy' : 'critical',
+                'message' => $aiResults['claude']['message'],
+                'response_time_ms' => $aiResults['claude']['response_time_ms'] ?? 0
+            ];
+        } catch (Exception $e) {
+            $services['openai'] = [
+                'status' => 'critical',
+                'message' => 'AI-Service nicht verfügbar: ' . $e->getMessage()
+            ];
+            $services['claude'] = [
+                'status' => 'critical',
+                'message' => 'AI-Service nicht verfügbar: ' . $e->getMessage()
+            ];
+        }
 
         $overallStatus = 'healthy';
         foreach ($services as $service) {

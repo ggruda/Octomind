@@ -23,62 +23,60 @@ class JiraService
         $this->config = ConfigService::getInstance();
         $this->logger = new LogService();
         
-        $authConfig = $this->config->getAuthConfig();
-        $jiraConfig = $this->config->getJiraConfig();
-        
-        $this->baseUrl = rtrim($authConfig['jira_base_url'], '/');
-        $this->username = $authConfig['jira_username'];
-        $this->apiToken = $authConfig['jira_api_token'];
-        $this->projectKey = $jiraConfig['project_key'];
+        $this->baseUrl = $this->config->get('auth.jira_base_url');
+        $this->username = $this->config->get('auth.jira_username');
+        $this->apiToken = $this->config->get('auth.jira_api_token');
+        $this->projectKey = $this->config->get('jira.project_key');
     }
 
     /**
-     * Holt neue Tickets von Jira basierend auf der Konfiguration
+     * Ruft Tickets von Jira ab basierend auf Konfiguration
      */
     public function fetchTickets(): array
     {
         $this->logger->info('Starte Jira-Ticket-Abruf', [
-            'project_key' => $this->projectKey,
+            'project' => $this->projectKey,
             'base_url' => $this->baseUrl
         ]);
 
         try {
             $jql = $this->buildJQL();
-            $this->logger->debug('Verwende JQL-Query', ['jql' => $jql]);
-            
-            $response = $this->makeJiraRequest('GET', '/rest/api/3/search', [
+            $this->logger->debug('Erstelle JQL-Query', ['jql' => $jql]);
+
+            $response = $this->makeJiraRequest('search', [
                 'jql' => $jql,
-                'maxResults' => 50,
                 'fields' => $this->getRequiredFields(),
-                'expand' => 'changelog'
+                'maxResults' => 50,
+                'startAt' => 0
             ]);
 
-            if (!$response['success']) {
-                throw new Exception('Jira API request failed: ' . $response['error']);
+            if (!$response->successful()) {
+                throw new Exception("Jira API Fehler: " . $response->body());
             }
 
-            $issues = $response['data']['issues'] ?? [];
-            $this->logger->info('Jira-Tickets abgerufen', [
-                'total_found' => $response['data']['total'] ?? 0,
-                'returned' => count($issues)
-            ]);
-
+            $data = $response->json();
             $tickets = [];
-            foreach ($issues as $issue) {
+
+            foreach ($data['issues'] ?? [] as $issue) {
                 try {
-                    $ticket = TicketDTO::fromJiraResponse($issue);
-                    $tickets[] = $ticket;
-                    
-                    // Speichere oder aktualisiere Ticket in der Datenbank
-                    $this->saveTicketToDatabase($ticket);
-                    
+                    $ticket = $this->parseJiraIssue($issue);
+                    if ($ticket) {
+                        $tickets[] = $ticket;
+                        $this->storeTicketInDatabase($ticket);
+                    }
                 } catch (Exception $e) {
-                    $this->logger->warning('Fehler beim Verarbeiten von Jira-Issue', [
+                    $this->logger->warning('Fehler beim Parsen von Ticket', [
                         'issue_key' => $issue['key'] ?? 'unknown',
                         'error' => $e->getMessage()
                     ]);
                 }
             }
+
+            $this->logger->info('Jira-Tickets erfolgreich abgerufen', [
+                'total_found' => $data['total'] ?? 0,
+                'returned' => count($tickets),
+                'processed' => count($tickets)
+            ]);
 
             return $tickets;
 
@@ -92,200 +90,43 @@ class JiraService
     }
 
     /**
-     * Erstellt die JQL-Query basierend auf der Konfiguration
+     * Testet die Verbindung zu Jira
      */
-    private function buildJQL(): string
+    public function testConnection(): array
     {
-        $jiraConfig = $this->config->getJiraConfig();
-        
-        $conditions = [];
-        
-        // Projekt-Filter
-        $conditions[] = "project = \"{$this->projectKey}\"";
-        
-        // Status-Filter
-        $allowedStatuses = $jiraConfig['allowed_statuses'];
-        if (!empty($allowedStatuses)) {
-            $statusList = '"' . implode('", "', $allowedStatuses) . '"';
-            $conditions[] = "status IN ({$statusList})";
-        }
-        
-        // Label-Filter
-        $requiredLabel = $jiraConfig['required_label'];
-        if ($requiredLabel) {
-            $conditions[] = "labels = \"{$requiredLabel}\"";
-        }
-        
-        // Unassigned-Filter
-        if ($jiraConfig['require_unassigned']) {
-            $conditions[] = "assignee IS EMPTY";
-        }
-        
-        // Nur Tickets, die noch nicht erfolgreich verarbeitet wurden
-        $processedTickets = $this->getProcessedTicketKeys();
-        if (!empty($processedTickets)) {
-            $ticketList = '"' . implode('", "', $processedTickets) . '"';
-            $conditions[] = "key NOT IN ({$ticketList})";
-        }
-        
-        // Sortierung nach Priorität und Erstellungsdatum
-        $jql = implode(' AND ', $conditions) . ' ORDER BY priority DESC, created ASC';
-        
-        return $jql;
-    }
-
-    /**
-     * Definiert die benötigten Felder für die Jira-Abfrage
-     */
-    private function getRequiredFields(): array
-    {
-        return [
-            'key',
-            'summary',
-            'description',
-            'status',
-            'assignee',
-            'labels',
-            'components',
-            'priority',
-            'issuetype',
-            'created',
-            'updated',
-            'project',
-            'attachment',
-            'comment',
-            // Custom fields - diese können je nach Jira-Konfiguration variieren
-            'customfield_*'
-        ];
-    }
-
-    /**
-     * Führt eine HTTP-Anfrage an die Jira-API aus
-     */
-    private function makeJiraRequest(string $method, string $endpoint, array $params = []): array
-    {
-        $startTime = microtime(true);
-        
         try {
-            $url = $this->baseUrl . $endpoint;
+            $startTime = microtime(true);
             
-            $response = Http::withBasicAuth($this->username, $this->apiToken)
-                ->withHeaders([
-                    'Accept' => 'application/json',
-                    'Content-Type' => 'application/json'
-                ])
-                ->timeout(30);
-
-            if ($method === 'GET') {
-                $response = $response->get($url, $params);
-            } elseif ($method === 'POST') {
-                $response = $response->post($url, $params);
-            } elseif ($method === 'PUT') {
-                $response = $response->put($url, $params);
-            } else {
-                throw new Exception("Unsupported HTTP method: {$method}");
-            }
-
-            $responseTime = (microtime(true) - $startTime) * 1000;
-            
-            $this->logger->performance('jira_api_request', $responseTime / 1000, [
-                'method' => $method,
-                'endpoint' => $endpoint,
-                'status_code' => $response->status(),
-                'response_time_ms' => $responseTime
-            ]);
+            $response = $this->makeJiraRequest('myself');
+            $responseTime = round((microtime(true) - $startTime) * 1000);
 
             if ($response->successful()) {
+                $userData = $response->json();
+                
+                $this->logger->info('Jira-Verbindungstest erfolgreich', [
+                    'user' => $userData['displayName'] ?? 'Unknown',
+                    'response_time_ms' => $responseTime
+                ]);
+
                 return [
                     'success' => true,
-                    'data' => $response->json(),
-                    'status_code' => $response->status()
+                    'message' => 'Verbindung zu Jira erfolgreich',
+                    'user' => $userData['displayName'] ?? 'Unknown',
+                    'response_time_ms' => $responseTime
                 ];
             } else {
-                return [
-                    'success' => false,
-                    'error' => "HTTP {$response->status()}: " . $response->body(),
-                    'status_code' => $response->status()
-                ];
+                throw new Exception("HTTP {$response->status()}: " . $response->body());
             }
 
         } catch (Exception $e) {
-            $responseTime = (microtime(true) - $startTime) * 1000;
-            
-            $this->logger->error('Jira API request failed', [
-                'method' => $method,
-                'endpoint' => $endpoint,
-                'error' => $e->getMessage(),
-                'response_time_ms' => $responseTime
+            $this->logger->error('Jira-Verbindungstest fehlgeschlagen', [
+                'error' => $e->getMessage()
             ]);
 
             return [
                 'success' => false,
-                'error' => $e->getMessage(),
-                'status_code' => 0
+                'message' => 'Jira-Verbindung fehlgeschlagen: ' . $e->getMessage()
             ];
-        }
-    }
-
-    /**
-     * Speichert ein Ticket in der lokalen Datenbank
-     */
-    private function saveTicketToDatabase(TicketDTO $ticket): void
-    {
-        try {
-            $ticketData = [
-                'key' => $ticket->key,
-                'project_key' => $ticket->projectKey,
-                'summary' => $ticket->summary,
-                'description' => $ticket->description,
-                'status' => $ticket->status->value,
-                'assignee' => $ticket->assignee,
-                'linked_repository' => $ticket->linkedRepository,
-                'labels' => json_encode($ticket->labels),
-                'components' => json_encode($ticket->components),
-                'priority' => $ticket->priority,
-                'issue_type' => $ticket->issueType,
-                'custom_fields' => json_encode($ticket->customFields),
-                'attachments' => json_encode($ticket->attachments),
-                'comments' => json_encode($ticket->comments),
-                'jira_created_at' => $ticket->createdAt,
-                'jira_updated_at' => $ticket->updatedAt,
-                'updated_at' => Carbon::now(),
-            ];
-
-            // Upsert: Insert oder Update falls bereits vorhanden
-            DB::table('tickets')
-                ->updateOrInsert(
-                    ['key' => $ticket->key],
-                    array_merge($ticketData, ['created_at' => Carbon::now()])
-                );
-
-            $this->logger->debug('Ticket in Datenbank gespeichert', ['ticket_key' => $ticket->key]);
-
-        } catch (Exception $e) {
-            $this->logger->error('Fehler beim Speichern des Tickets in die Datenbank', [
-                'ticket_key' => $ticket->key,
-                'error' => $e->getMessage()
-            ]);
-        }
-    }
-
-    /**
-     * Holt die Keys von bereits erfolgreich verarbeiteten Tickets
-     */
-    private function getProcessedTicketKeys(): array
-    {
-        try {
-            return DB::table('tickets')
-                ->where('status', TicketStatus::COMPLETED->value)
-                ->where('updated_at', '>', Carbon::now()->subDays(7)) // Nur letzte 7 Tage
-                ->pluck('key')
-                ->toArray();
-        } catch (Exception $e) {
-            $this->logger->warning('Fehler beim Abrufen verarbeiteter Tickets', [
-                'error' => $e->getMessage()
-            ]);
-            return [];
         }
     }
 
@@ -295,43 +136,27 @@ class JiraService
     public function addComment(string $ticketKey, string $comment): bool
     {
         try {
-            $this->logger->info('Füge Kommentar zu Jira-Ticket hinzu', [
-                'ticket_key' => $ticketKey,
+            $this->logger->debug('Füge Kommentar zu Ticket hinzu', [
+                'ticket' => $ticketKey,
                 'comment_length' => strlen($comment)
             ]);
 
-            $response = $this->makeJiraRequest('POST', "/rest/api/3/issue/{$ticketKey}/comment", [
-                'body' => [
-                    'type' => 'doc',
-                    'version' => 1,
-                    'content' => [
-                        [
-                            'type' => 'paragraph',
-                            'content' => [
-                                [
-                                    'text' => $comment,
-                                    'type' => 'text'
-                                ]
-                            ]
-                        ]
-                    ]
-                ]
-            ]);
+            $response = $this->makeJiraRequest("issue/{$ticketKey}/comment", [
+                'body' => $this->formatJiraComment($comment)
+            ], 'POST');
 
-            if ($response['success']) {
-                $this->logger->info('Kommentar erfolgreich hinzugefügt', ['ticket_key' => $ticketKey]);
+            if ($response->successful()) {
+                $this->logger->info('Kommentar erfolgreich hinzugefügt', [
+                    'ticket' => $ticketKey
+                ]);
                 return true;
             } else {
-                $this->logger->error('Fehler beim Hinzufügen des Kommentars', [
-                    'ticket_key' => $ticketKey,
-                    'error' => $response['error']
-                ]);
-                return false;
+                throw new Exception("HTTP {$response->status()}: " . $response->body());
             }
 
         } catch (Exception $e) {
-            $this->logger->error('Exception beim Hinzufügen des Kommentars', [
-                'ticket_key' => $ticketKey,
+            $this->logger->error('Fehler beim Hinzufügen des Kommentars', [
+                'ticket' => $ticketKey,
                 'error' => $e->getMessage()
             ]);
             return false;
@@ -339,31 +164,57 @@ class JiraService
     }
 
     /**
-     * Aktualisiert den Status eines Tickets in Jira
+     * Aktualisiert den Status eines Jira-Tickets
      */
     public function updateTicketStatus(string $ticketKey, string $status): bool
     {
         try {
-            // Hier würde die Jira-Transition-Logik implementiert werden
-            // Dies ist komplex, da Jira Workflows verwendet
-            $this->logger->info('Ticket-Status-Update angefordert', [
-                'ticket_key' => $ticketKey,
-                'new_status' => $status
-            ]);
+            // Hole verfügbare Transitions
+            $transitionsResponse = $this->makeJiraRequest("issue/{$ticketKey}/transitions");
+            
+            if (!$transitionsResponse->successful()) {
+                throw new Exception("Konnte Transitions nicht abrufen: " . $transitionsResponse->body());
+            }
 
-            // Für jetzt nur lokale Aktualisierung
-            DB::table('tickets')
-                ->where('key', $ticketKey)
-                ->update([
-                    'status' => $status,
-                    'updated_at' => Carbon::now()
+            $transitions = $transitionsResponse->json()['transitions'] ?? [];
+            $targetTransition = null;
+
+            // Finde passende Transition
+            foreach ($transitions as $transition) {
+                if (stripos($transition['name'], $status) !== false || 
+                    stripos($transition['to']['name'], $status) !== false) {
+                    $targetTransition = $transition;
+                    break;
+                }
+            }
+
+            if (!$targetTransition) {
+                $this->logger->warning('Keine passende Transition gefunden', [
+                    'ticket' => $ticketKey,
+                    'target_status' => $status,
+                    'available_transitions' => array_column($transitions, 'name')
                 ]);
+                return false;
+            }
 
-            return true;
+            // Führe Transition aus
+            $response = $this->makeJiraRequest("issue/{$ticketKey}/transitions", [
+                'transition' => ['id' => $targetTransition['id']]
+            ], 'POST');
+
+            if ($response->successful()) {
+                $this->logger->info('Ticket-Status erfolgreich aktualisiert', [
+                    'ticket' => $ticketKey,
+                    'new_status' => $targetTransition['to']['name']
+                ]);
+                return true;
+            } else {
+                throw new Exception("HTTP {$response->status()}: " . $response->body());
+            }
 
         } catch (Exception $e) {
             $this->logger->error('Fehler beim Aktualisieren des Ticket-Status', [
-                'ticket_key' => $ticketKey,
+                'ticket' => $ticketKey,
                 'status' => $status,
                 'error' => $e->getMessage()
             ]);
@@ -372,43 +223,218 @@ class JiraService
     }
 
     /**
-     * Testet die Verbindung zur Jira-API
+     * Erstellt JQL-Query basierend auf Konfiguration
      */
-    public function testConnection(): array
+    private function buildJQL(): string
+    {
+        $conditions = [];
+        
+        // Projekt-Filter
+        if ($this->projectKey) {
+            $conditions[] = "project = \"{$this->projectKey}\"";
+        }
+
+        // Status-Filter
+        $allowedStatuses = $this->config->get('jira.allowed_statuses', ['Open', 'In Progress', 'To Do']);
+        if (!empty($allowedStatuses)) {
+            $statusList = implode('", "', $allowedStatuses);
+            $conditions[] = "status IN (\"{$statusList}\")";
+        }
+
+        // Label-Filter
+        $requiredLabel = $this->config->get('jira.required_label');
+        if ($requiredLabel) {
+            $conditions[] = "labels = \"{$requiredLabel}\"";
+        }
+
+        // Unassigned-Filter
+        if ($this->config->get('jira.require_unassigned', true)) {
+            $conditions[] = "assignee is EMPTY";
+        }
+
+        // Zeitfilter - nur neuere Tickets
+        $conditions[] = "created >= -30d";
+
+        // Sortierung
+        $jql = implode(' AND ', $conditions) . ' ORDER BY created DESC';
+
+        return $jql;
+    }
+
+    /**
+     * Definiert welche Felder von Jira abgerufen werden sollen
+     */
+    private function getRequiredFields(): array
+    {
+        return [
+            'key',
+            'summary',
+            'description', 
+            'status',
+            'priority',
+            'assignee',
+            'reporter',
+            'created',
+            'updated',
+            'labels',
+            'components',
+            'fixVersions',
+            'customfield_10000', // Beispiel für Repository-Link Custom Field
+        ];
+    }
+
+    /**
+     * Parst ein Jira-Issue zu einem TicketDTO
+     */
+    private function parseJiraIssue(array $issue): ?TicketDTO
     {
         try {
-            $this->logger->info('Teste Jira-API-Verbindung');
+            $fields = $issue['fields'] ?? [];
             
-            $response = $this->makeJiraRequest('GET', '/rest/api/3/myself');
+            // Repository-Link aus verschiedenen Quellen extrahieren
+            $repositoryUrl = $this->extractRepositoryUrl($fields);
             
-            if ($response['success']) {
-                $user = $response['data'];
-                $this->logger->info('Jira-Verbindung erfolgreich', [
-                    'user' => $user['displayName'] ?? 'Unknown',
-                    'account_id' => $user['accountId'] ?? 'Unknown'
+            if (!$repositoryUrl) {
+                $this->logger->debug('Ticket hat keinen Repository-Link', [
+                    'ticket' => $issue['key']
                 ]);
-                
-                return [
-                    'success' => true,
-                    'message' => 'Verbindung zu Jira erfolgreich',
-                    'user' => $user['displayName'] ?? 'Unknown'
-                ];
-            } else {
-                return [
-                    'success' => false,
-                    'message' => 'Jira-Verbindung fehlgeschlagen: ' . $response['error']
-                ];
+                return null; // Skip tickets ohne Repository-Link
             }
 
+            $ticketDto = new TicketDTO(
+                key: $issue['key'],
+                summary: $fields['summary'] ?? '',
+                description: $fields['description'] ?? '',
+                status: $fields['status']['name'] ?? 'Unknown',
+                priority: $fields['priority']['name'] ?? 'Medium',
+                assignee: $fields['assignee']['displayName'] ?? null,
+                reporter: $fields['reporter']['displayName'] ?? 'Unknown',
+                created: Carbon::parse($fields['created']),
+                updated: Carbon::parse($fields['updated']),
+                labels: $fields['labels'] ?? [],
+                repositoryUrl: $repositoryUrl
+            );
+
+            $this->logger->debug('Ticket erfolgreich geparst', [
+                'ticket' => $ticketDto->key,
+                'repository' => $ticketDto->repositoryUrl
+            ]);
+
+            return $ticketDto;
+
         } catch (Exception $e) {
-            $this->logger->error('Jira-Verbindungstest fehlgeschlagen', [
+            $this->logger->error('Fehler beim Parsen des Jira-Issues', [
+                'issue_key' => $issue['key'] ?? 'unknown',
                 'error' => $e->getMessage()
             ]);
-            
-            return [
-                'success' => false,
-                'message' => 'Jira-Verbindung fehlgeschlagen: ' . $e->getMessage()
-            ];
+            return null;
+        }
+    }
+
+    /**
+     * Extrahiert Repository-URL aus verschiedenen Jira-Feldern
+     */
+    private function extractRepositoryUrl(array $fields): ?string
+    {
+        // 1. Custom Field (konfigurierbar)
+        $customFieldKey = $this->config->get('jira.repository_custom_field', 'customfield_10000');
+        if (!empty($fields[$customFieldKey])) {
+            return $fields[$customFieldKey];
+        }
+
+        // 2. Aus Beschreibung extrahieren
+        $description = $fields['description'] ?? '';
+        if (preg_match('/https:\/\/github\.com\/[^\s]+/', $description, $matches)) {
+            return $matches[0];
+        }
+
+        // 3. Aus Kommentaren (falls verfügbar)
+        // Hier könnte zusätzliche Logik implementiert werden
+
+        return null;
+    }
+
+    /**
+     * Macht HTTP-Request an Jira API
+     */
+    private function makeJiraRequest(string $endpoint, array $data = [], string $method = 'GET')
+    {
+        $url = rtrim($this->baseUrl, '/') . '/rest/api/2/' . ltrim($endpoint, '/');
+        
+        $request = Http::withBasicAuth($this->username, $this->apiToken)
+            ->withHeaders([
+                'Accept' => 'application/json',
+                'Content-Type' => 'application/json',
+            ])
+            ->timeout(30);
+
+        return match(strtoupper($method)) {
+            'GET' => $request->get($url, $data),
+            'POST' => $request->post($url, $data),
+            'PUT' => $request->put($url, $data),
+            'DELETE' => $request->delete($url, $data),
+            default => throw new Exception("Unsupported HTTP method: {$method}")
+        };
+    }
+
+    /**
+     * Formatiert Kommentar für Jira (ADF Format)
+     */
+    private function formatJiraComment(string $comment): array
+    {
+        return [
+            'type' => 'doc',
+            'version' => 1,
+            'content' => [
+                [
+                    'type' => 'paragraph',
+                    'content' => [
+                        [
+                            'type' => 'text',
+                            'text' => $comment
+                        ]
+                    ]
+                ]
+            ]
+        ];
+    }
+
+    /**
+     * Speichert Ticket in der Datenbank
+     */
+    private function storeTicketInDatabase(TicketDTO $ticket): void
+    {
+        try {
+            DB::table('tickets')->updateOrInsert(
+                ['jira_key' => $ticket->key],
+                [
+                    'jira_key' => $ticket->key,
+                    'summary' => $ticket->summary,
+                    'description' => $ticket->description,
+                    'status' => TicketStatus::PENDING->value,
+                    'jira_status' => $ticket->status,
+                    'priority' => $ticket->priority,
+                    'assignee' => $ticket->assignee,
+                    'reporter' => $ticket->reporter,
+                    'repository_url' => $ticket->repositoryUrl,
+                    'labels' => json_encode($ticket->labels),
+                    'jira_created_at' => $ticket->created,
+                    'jira_updated_at' => $ticket->updated,
+                    'fetched_at' => Carbon::now(),
+                    'created_at' => Carbon::now(),
+                    'updated_at' => Carbon::now(),
+                ]
+            );
+
+            $this->logger->debug('Ticket in Datenbank gespeichert', [
+                'ticket' => $ticket->key
+            ]);
+
+        } catch (Exception $e) {
+            $this->logger->error('Fehler beim Speichern des Tickets in der Datenbank', [
+                'ticket' => $ticket->key,
+                'error' => $e->getMessage()
+            ]);
         }
     }
 } 
