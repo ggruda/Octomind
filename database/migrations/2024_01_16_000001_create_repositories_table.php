@@ -33,9 +33,9 @@ return new class extends Migration
             // Repository-Konfiguration
             $table->boolean('is_private')->default(true);
             $table->boolean('bot_enabled')->default(true);
-            $table->json('allowed_file_extensions')->default('["php", "js", "ts", "vue", "blade.php", "json", "yaml", "yml", "md"]');
-            $table->json('forbidden_paths')->default('[".env", ".git", "vendor", "node_modules"]');
-            $table->integer('max_file_size')->default(1048576); // 1MB in Bytes
+            $table->json('allowed_file_extensions')->nullable();
+            $table->json('forbidden_paths')->nullable();
+            $table->integer('max_file_size')->default(1024 * 1024); // 1MB in bytes
             
             // Framework-Erkennung
             $table->string('framework_type')->nullable(); // laravel, nodejs, python, etc.

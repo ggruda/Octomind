@@ -2,12 +2,29 @@
 
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\TicketController;
+use App\Http\Controllers\BotController;
 use App\Services\ConfigService;
 use App\Services\BotStatusService;
 use App\Services\LogService;
 
 // Bot Dashboard
-Route::get('/', [TicketController::class, 'dashboard'])->name('dashboard');
+Route::get('/', function () {
+    return view('welcome');
+});
+
+// Bot-Management Routen
+Route::prefix('bot')->name('bot.')->group(function () {
+    Route::get('/', [BotController::class, 'dashboard'])->name('dashboard');
+    Route::get('/create', [BotController::class, 'create'])->name('create');
+    Route::post('/store', [BotController::class, 'store'])->name('store');
+    Route::post('/start', [BotController::class, 'start'])->name('start');
+    Route::post('/stop', [BotController::class, 'stop'])->name('stop');
+    Route::post('/load-tickets', [BotController::class, 'loadTickets'])->name('load-tickets');
+    Route::get('/status/{projectKey}', [BotController::class, 'status'])->name('status');
+});
+
+// Standard-Route umleiten zum Bot-Dashboard
+Route::redirect('/', '/bot');
 
 // API Routes für Ticket-Management
 Route::prefix('api')->group(function () {

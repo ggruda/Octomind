@@ -26,7 +26,7 @@ return new class extends Migration
             $table->boolean('bot_enabled')->default(true);
             $table->string('required_label')->default('ai-bot'); // Label das Tickets haben müssen
             $table->boolean('require_unassigned')->default(true);
-            $table->json('allowed_statuses')->default('["Open", "In Progress", "To Do"]');
+            $table->json('allowed_statuses')->nullable();
             $table->integer('fetch_interval')->default(300); // Sekunden zwischen Ticket-Abrufen
             
             // Repository-Verknüpfung

@@ -35,8 +35,9 @@ services:
     environment:
       - PMA_HOST=database
       - PMA_PORT=3306
-      - PMA_USER=octomind
-      - PMA_PASSWORD=octomind_password
+      - PMA_USER=root
+      - PMA_PASSWORD=octomind_root_password
+      - PMA_ARBITRARY=1
       - MYSQL_ROOT_PASSWORD=octomind_root_password
     networks:
       - octomind-network
@@ -44,6 +45,40 @@ services:
       - "8081:80"
     depends_on:
       - database
+
+  # Laravel Web-Interface für Bot-Management
+  web:
+    image: php:8.3-apache
+    container_name: octomind-web
+    restart: unless-stopped
+    working_dir: /var/www/html
+    environment:
+      - DB_CONNECTION=mysql
+      - DB_HOST=database
+      - DB_PORT=3306
+      - DB_DATABASE=octomind
+      - DB_USERNAME=octomind
+      - DB_PASSWORD=octomind_password
+    volumes:
+      - .:/var/www/html
+      - ./docker/apache-vhost.conf:/etc/apache2/sites-available/000-default.conf
+    networks:
+      - octomind-network
+    ports:
+      - "8080:80"
+    depends_on:
+      - database
+      - redis
+    command: >
+      bash -c "
+        apt-get update &&
+        apt-get install -y libzip-dev zip unzip git &&
+        docker-php-ext-install pdo pdo_mysql zip &&
+        a2enmod rewrite &&
+        chown -R www-data:www-data /var/www/html &&
+        chmod -R 755 /var/www/html/storage &&
+        apache2-foreground
+      "
 
   # Andere Services bleiben gleich...
   redis:

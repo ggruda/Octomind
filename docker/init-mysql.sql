@@ -1,11 +1,16 @@
 -- MySQL initialization script for Octomind Bot
 -- This script is executed when the MySQL container starts for the first time
 
+-- Create octomind user with full permissions
+CREATE USER IF NOT EXISTS 'octomind'@'%' IDENTIFIED BY 'octomind_password';
+GRANT ALL PRIVILEGES ON octomind.* TO 'octomind'@'%';
+
 -- Create additional database user with limited permissions
 CREATE USER IF NOT EXISTS 'octomind_readonly'@'%' IDENTIFIED BY 'readonly_password';
-
--- Grant read-only access to octomind_readonly
 GRANT SELECT ON octomind.* TO 'octomind_readonly'@'%';
+
+-- Flush privileges to ensure they take effect
+FLUSH PRIVILEGES;
 
 -- Set timezone
 SET time_zone = '+00:00';

@@ -32,7 +32,7 @@ return new class extends Migration
             $table->index('created_at');
             
             // Foreign key
-            $table->foreign('ticket_key')->references('key')->on('tickets')->onDelete('cascade');
+            $table->foreign('ticket_key')->references('jira_key')->on('tickets')->onDelete('cascade');
         });
     }
 

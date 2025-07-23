@@ -1,0 +1,6 @@
+
+# Füge diese Zeile in deine .env-Datei ein:
+GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# Ersetze 'ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' mit deinem echten Token
+

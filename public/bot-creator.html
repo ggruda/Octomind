@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤖 Octomind Bot Creator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-800 mb-2">
+                🤖 <span class="text-blue-600">Octomind</span> Bot Creator
+            </h1>
+            <p class="text-gray-600">Erstelle deinen persönlichen Jira-Ticket-Bot in wenigen Schritten</p>
+        </div>
+
+        <!-- Haupt-Formular -->
+        <div class="max-w-4xl mx-auto">
+            <div class="bg-white rounded-xl shadow-lg p-8">
+                <div id="successMessage" class="bg-green-50 border border-green-200 rounded-lg p-4 mb-6 hidden">
+                    <div class="flex items-center">
+                        <i class="fas fa-check-circle text-green-500 mr-2"></i>
+                        <p class="text-green-800">Bot-Konfiguration wurde erfolgreich generiert!</p>
+                    </div>
+                </div>
+
+                <div id="errorMessage" class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 hidden">
+                    <div class="flex items-center">
+                        <i class="fas fa-exclamation-triangle text-red-500 mr-2"></i>
+                        <p class="text-red-800">Bitte fülle alle Felder aus!</p>
+                    </div>
+                </div>
+
+                <form id="botForm" class="space-y-8">
+                    <!-- Bot-Grundeinstellungen -->
+                    <div class="border-b border-gray-200 pb-6">
+                        <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
+                            <i class="fas fa-robot text-blue-500 mr-3"></i>
+                            Bot-Grundeinstellungen
+                        </h2>
+                        
+                        <div class="grid md:grid-cols-1 gap-6">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">
+                                    <i class="fas fa-tag text-gray-400 mr-2"></i>
+                                    Bot-Name
+                                </label>
+                                <input type="text" id="botName" 
+                                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                       placeholder="Mein Jira Bot" required>
+                                <p class="text-sm text-gray-500 mt-1">Ein eindeutiger Name für deinen Bot</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Jira-Konfiguration -->
+                    <div class="border-b border-gray-200 pb-6">
+                        <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
+                            <i class="fab fa-jira text-blue-600 mr-3"></i>
+                            Jira-Konfiguration
+                        </h2>
+                        
+                        <div class="grid md:grid-cols-2 gap-6">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">
+                                    <i class="fas fa-link text-gray-400 mr-2"></i>
+                                    Jira Base URL
+                                </label>
+                                <input type="url" id="jiraBaseUrl" 
+                                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                       placeholder="https://deine-domain.atlassian.net" required>
+                                <p class="text-sm text-gray-500 mt-1">Deine Jira-Instanz URL</p>
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">
+                                    <i class="fas fa-key text-gray-400 mr-2"></i>
+                                    Projekt-Schlüssel
+                                </label>
+                                <input type="text" id="jiraProjectKey" 
+                                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                       placeholder="PROJ" required maxlength="10">
+                                <p class="text-sm text-gray-500 mt-1">Der Schlüssel deines Jira-Projekts</p>
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">
+                                    <i class="fas fa-user text-gray-400 mr-2"></i>
+                                    Jira Benutzername (E-Mail)
+                                </label>
+                                <input type="email" id="jiraUsername" 
+                                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                       placeholder="deine-email@example.com" required>
+                                <p class="text-sm text-gray-500 mt-1">Deine Jira-Anmelde-E-Mail</p>
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">
+                                    <i class="fas fa-shield-alt text-gray-400 mr-2"></i>
+                                    Jira API Token
+                                </label>
+                                <input type="password" id="jiraApiToken" 
+                                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                       placeholder="Dein Jira API Token" required>
+                                <p class="text-sm text-gray-500 mt-1">
+                                    <a href="https://id.atlassian.com/manage-profile/security/api-tokens" 
+                                       target="_blank" class="text-blue-600 hover:underline">
+                                        Hier erstellen <i class="fas fa-external-link-alt ml-1"></i>
+                                    </a>
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- GitHub-Konfiguration -->
+                    <div class="border-b border-gray-200 pb-6">
+                        <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
+                            <i class="fab fa-github text-gray-800 mr-3"></i>
+                            GitHub-Konfiguration
+                        </h2>
+                        
+                        <div class="grid md:grid-cols-2 gap-6">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">
+                                    <i class="fas fa-code-branch text-gray-400 mr-2"></i>
+                                    GitHub Repository
+                                </label>
+                                <input type="text" id="githubRepository" 
+                                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                       placeholder="benutzername/repository-name" required>
+                                <p class="text-sm text-gray-500 mt-1">Format: benutzername/repository-name</p>
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">
+                                    <i class="fas fa-key text-gray-400 mr-2"></i>
+                                    GitHub Personal Access Token
+                                </label>
+                                <input type="password" id="githubToken" 
+                                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                       placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" required>
+                                <p class="text-sm text-gray-500 mt-1">
+                                    <a href="https://github.com/settings/tokens/new" 
+                                       target="_blank" class="text-blue-600 hover:underline">
+                                        Hier erstellen <i class="fas fa-external-link-alt ml-1"></i>
+                                    </a>
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Aktions-Buttons -->
+                    <div class="flex justify-between items-center pt-6">
+                        <button type="button" onclick="generateEnvFile()" 
+                                class="px-6 py-3 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors">
+                            <i class="fas fa-file-alt mr-2"></i>
+                            .env Datei generieren
+                        </button>
+                        
+                        <button type="submit" 
+                                class="px-8 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-semibold">
+                            <i class="fas fa-rocket mr-2"></i>
+                            Bot-Befehle generieren
+                        </button>
+                    </div>
+                </form>
+
+                <!-- Generierte Befehle -->
+                <div id="generatedCommands" class="mt-8 hidden">
+                    <div class="bg-gray-900 rounded-lg p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4 flex items-center">
+                            <i class="fas fa-terminal text-green-400 mr-2"></i>
+                            Generierte Bot-Setup-Befehle
+                        </h3>
+                        <pre id="commandsOutput" class="text-green-400 text-sm overflow-x-auto"></pre>
+                        <button onclick="copyCommands()" 
+                                class="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
+                            <i class="fas fa-copy mr-2"></i>
+                            Befehle kopieren
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Generierte .env -->
+                <div id="generatedEnv" class="mt-8 hidden">
+                    <div class="bg-gray-900 rounded-lg p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4 flex items-center">
+                            <i class="fas fa-cog text-yellow-400 mr-2"></i>
+                            Generierte .env Konfiguration
+                        </h3>
+                        <pre id="envOutput" class="text-yellow-400 text-sm overflow-x-auto"></pre>
+                        <button onclick="copyEnv()" 
+                                class="mt-4 px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors">
+                            <i class="fas fa-copy mr-2"></i>
+                            .env kopieren
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Hilfe-Sektion -->
+            <div class="mt-8 bg-blue-50 rounded-xl p-6">
+                <h3 class="text-lg font-semibold text-blue-800 mb-3 flex items-center">
+                    <i class="fas fa-info-circle text-blue-600 mr-2"></i>
+                    Nächste Schritte
+                </h3>
+                <div class="grid md:grid-cols-2 gap-4 text-sm text-blue-700">
+                    <div>
+                        <h4 class="font-semibold mb-2">📋 1. .env Datei aktualisieren:</h4>
+                        <ul class="list-disc list-inside space-y-1">
+                            <li>Kopiere die generierte .env Konfiguration</li>
+                            <li>Füge sie in deine .env Datei ein</li>
+                            <li>Führe <code>php artisan config:clear</code> aus</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h4 class="font-semibold mb-2">🚀 2. Bot starten:</h4>
+                        <ul class="list-disc list-inside space-y-1">
+                            <li>Kopiere die generierten Befehle</li>
+                            <li>Führe sie in deinem Terminal aus</li>
+                            <li>Dein Bot ist bereit für Jira-Tickets!</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let generatedCommandsText = '';
+        let generatedEnvText = '';
+
+        document.getElementById('botForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            generateBotCommands();
+        });
+
+        function generateBotCommands() {
+            // Formular-Validierung
+            const form = document.getElementById('botForm');
+            const inputs = form.querySelectorAll('input[required]');
+            let isValid = true;
+
+            inputs.forEach(input => {
+                if (!input.value.trim()) {
+                    isValid = false;
+                    input.classList.add('border-red-500');
+                } else {
+                    input.classList.remove('border-red-500');
+                }
+            });
+
+            if (!isValid) {
+                showError('Bitte fülle alle Pflichtfelder aus!');
+                return;
+            }
+
+            // Werte aus dem Formular holen
+            const botName = document.getElementById('botName').value;
+            const jiraBaseUrl = document.getElementById('jiraBaseUrl').value;
+            const jiraProjectKey = document.getElementById('jiraProjectKey').value;
+            const jiraUsername = document.getElementById('jiraUsername').value;
+            const jiraApiToken = document.getElementById('jiraApiToken').value;
+            const githubRepository = document.getElementById('githubRepository').value;
+            const githubToken = document.getElementById('githubToken').value;
+
+            // Bot-Setup-Befehle generieren
+            const commands = `#!/bin/bash
+# 🤖 ${botName} - Automatisch generierte Setup-Befehle
+
+echo "🚀 Starte ${botName} Setup..."
+
+# 1. Projekt aus Jira importieren
+docker run --rm --network octomind_octomind-network \\
+  -v $(pwd):/var/www/octomind -w /var/www/octomind \\
+  -e JIRA_BASE_URL="${jiraBaseUrl}" \\
+  -e JIRA_USERNAME="${jiraUsername}" \\
+  -e JIRA_API_TOKEN="${jiraApiToken}" \\
+  -e JIRA_PROJECT_KEY="${jiraProjectKey}" \\
+  -e GITHUB_TOKEN="${githubToken}" \\
+  -e GITHUB_REPOSITORY="${githubRepository}" \\
+  php:8.3-cli-alpine sh -c "
+    docker-php-ext-install pdo pdo_mysql && 
+    php artisan octomind:project import ${jiraProjectKey} --jira-base-url=${jiraBaseUrl} --name='${botName}'
+  "
+
+# 2. Repository importieren
+docker run --rm --network octomind_octomind-network \\
+  -v $(pwd):/var/www/octomind -w /var/www/octomind \\
+  -e GITHUB_TOKEN="${githubToken}" \\
+  -e GITHUB_REPOSITORY="${githubRepository}" \\
+  php:8.3-cli-alpine sh -c "
+    docker-php-ext-install pdo pdo_mysql && 
+    php artisan octomind:repository import ${githubRepository} --provider=github --bot-enabled
+  "
+
+# 3. SSH-Keys initialisieren
+docker run --rm --network octomind_octomind-network \\
+  -v $(pwd):/var/www/octomind -w /var/www/octomind \\
+  php:8.3-cli-alpine sh -c "
+    docker-php-ext-install pdo pdo_mysql && 
+    php artisan octomind:ssh-keys init
+  "
+
+# 4. Repository klonen
+docker run --rm --network octomind_octomind-network \\
+  -v $(pwd):/var/www/octomind -w /var/www/octomind \\
+  -e GITHUB_REPOSITORY="${githubRepository}" \\
+  php:8.3-cli-alpine sh -c "
+    docker-php-ext-install pdo pdo_mysql && 
+    php artisan octomind:repository clone ${githubRepository}
+  "
+
+# 5. Repository mit Projekt verknüpfen
+docker run --rm --network octomind_octomind-network \\
+  -v $(pwd):/var/www/octomind -w /var/www/octomind \\
+  php:8.3-cli-alpine sh -c "
+    docker-php-ext-install pdo pdo_mysql && 
+    php artisan octomind:project attach-repo ${jiraProjectKey} ${githubRepository}
+  "
+
+# 6. Bot-Session erstellen (10 Stunden)
+docker run --rm --network octomind_octomind-network \\
+  -v $(pwd):/var/www/octomind -w /var/www/octomind \\
+  php:8.3-cli-alpine sh -c "
+    docker-php-ext-install pdo pdo_mysql && 
+    php artisan octomind:bot:create-session ${jiraProjectKey} --hours=10
+  "
+
+# 7. Tickets laden
+docker run --rm --network octomind_octomind-network \\
+  -v $(pwd):/var/www/octomind -w /var/www/octomind \\
+  -e JIRA_BASE_URL="${jiraBaseUrl}" \\
+  -e JIRA_USERNAME="${jiraUsername}" \\
+  -e JIRA_API_TOKEN="${jiraApiToken}" \\
+  -e JIRA_PROJECT_KEY="${jiraProjectKey}" \\
+  php:8.3-cli-alpine sh -c "
+    docker-php-ext-install pdo pdo_mysql && 
+    php artisan octomind:load-tickets
+  "
+
+# 8. Bot starten
+docker run --rm --network octomind_octomind-network \\
+  -v $(pwd):/var/www/octomind -w /var/www/octomind \\
+  -e JIRA_BASE_URL="${jiraBaseUrl}" \\
+  -e JIRA_USERNAME="${jiraUsername}" \\
+  -e JIRA_API_TOKEN="${jiraApiToken}" \\
+  -e JIRA_PROJECT_KEY="${jiraProjectKey}" \\
+  -e GITHUB_TOKEN="${githubToken}" \\
+  -e GITHUB_REPOSITORY="${githubRepository}" \\
+  php:8.3-cli-alpine sh -c "
+    docker-php-ext-install pdo pdo_mysql && 
+    php artisan octomind:bot:start ${jiraProjectKey} --daemon
+  "
+
+echo "✅ ${botName} ist bereit und läuft!"`;
+
+            generatedCommandsText = commands;
+            document.getElementById('commandsOutput').textContent = commands;
+            document.getElementById('generatedCommands').classList.remove('hidden');
+            
+            showSuccess('Bot-Setup-Befehle wurden erfolgreich generiert!');
+        }
+
+        function generateEnvFile() {
+            // Werte aus dem Formular holen
+            const jiraBaseUrl = document.getElementById('jiraBaseUrl').value;
+            const jiraUsername = document.getElementById('jiraUsername').value;
+            const jiraApiToken = document.getElementById('jiraApiToken').value;
+            const jiraProjectKey = document.getElementById('jiraProjectKey').value;
+            const githubRepository = document.getElementById('githubRepository').value;
+            const githubToken = document.getElementById('githubToken').value;
+
+            if (!jiraBaseUrl || !jiraUsername || !jiraApiToken || !jiraProjectKey || !githubRepository || !githubToken) {
+                showError('Bitte fülle alle Felder aus, bevor du die .env Datei generierst!');
+                return;
+            }
+
+            const envConfig = `# 🤖 Octomind Bot Konfiguration
+# Generiert am: ${new Date().toLocaleString('de-DE')}
+
+# Jira-Konfiguration
+JIRA_BASE_URL="${jiraBaseUrl}"
+JIRA_USERNAME="${jiraUsername}"
+JIRA_API_TOKEN="${jiraApiToken}"
+JIRA_PROJECT_KEY="${jiraProjectKey}"
+
+# GitHub-Konfiguration
+GITHUB_TOKEN="${githubToken}"
+GITHUB_REPOSITORY="${githubRepository}"
+
+# MySQL-Datenbank (bereits konfiguriert)
+DB_CONNECTION=mysql
+DB_HOST=database
+DB_PORT=3306
+DB_DATABASE=octomind
+DB_USERNAME=octomind
+DB_PASSWORD=octomind_password
+DB_CHARSET=utf8mb4
+DB_COLLATION=utf8mb4_unicode_ci
+
+# AI-Provider (optional - später konfigurieren)
+# OPENAI_API_KEY=dein-openai-api-key
+# CLAUDE_API_KEY=dein-claude-api-key
+
+# App-Grundeinstellungen
+APP_NAME="Octomind Bot"
+APP_ENV=local
+APP_KEY=base64:$(openssl rand -base64 32)
+APP_DEBUG=true
+APP_URL=http://localhost:8080
+
+# Cache & Session
+CACHE_DRIVER=redis
+SESSION_DRIVER=redis
+QUEUE_CONNECTION=redis
+
+# Redis
+REDIS_HOST=redis
+REDIS_PASSWORD=null
+REDIS_PORT=6379
+
+# Mail (Mailpit für Testing)
+MAIL_MAILER=smtp
+MAIL_HOST=mailpit
+MAIL_PORT=1025
+MAIL_USERNAME=null
+MAIL_PASSWORD=null
+MAIL_ENCRYPTION=null
+MAIL_FROM_ADDRESS="bot@octomind.local"
+MAIL_FROM_NAME="Octomind Bot"`;
+
+            generatedEnvText = envConfig;
+            document.getElementById('envOutput').textContent = envConfig;
+            document.getElementById('generatedEnv').classList.remove('hidden');
+            
+            showSuccess('.env Konfiguration wurde erfolgreich generiert!');
+        }
+
+        function copyCommands() {
+            navigator.clipboard.writeText(generatedCommandsText).then(() => {
+                showSuccess('Bot-Setup-Befehle wurden in die Zwischenablage kopiert!');
+            });
+        }
+
+        function copyEnv() {
+            navigator.clipboard.writeText(generatedEnvText).then(() => {
+                showSuccess('.env Konfiguration wurde in die Zwischenablage kopiert!');
+            });
+        }
+
+        function showSuccess(message) {
+            const successDiv = document.getElementById('successMessage');
+            successDiv.querySelector('p').textContent = message;
+            successDiv.classList.remove('hidden');
+            document.getElementById('errorMessage').classList.add('hidden');
+            
+            setTimeout(() => {
+                successDiv.classList.add('hidden');
+            }, 5000);
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.querySelector('p').textContent = message;
+            errorDiv.classList.remove('hidden');
+            document.getElementById('successMessage').classList.add('hidden');
+            
+            setTimeout(() => {
+                errorDiv.classList.add('hidden');
+            }, 5000);
+        }
+    </script>
+</body>
+</html> 
