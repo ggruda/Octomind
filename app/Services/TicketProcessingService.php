@@ -19,6 +19,7 @@ class TicketProcessingService
     private PromptBuilderService $promptBuilder;
     private KnowledgeBaseService $knowledgeBase;
     private CodeReviewService $codeReview;
+    private RepositoryInitializationService $repoInit;
 
     public function __construct()
     {
@@ -30,6 +31,7 @@ class TicketProcessingService
         $this->promptBuilder = new PromptBuilderService();
         $this->knowledgeBase = new KnowledgeBaseService();
         $this->codeReview = new CodeReviewService();
+        $this->repoInit = new RepositoryInitializationService();
     }
 
     /**
@@ -52,30 +54,33 @@ class TicketProcessingService
             // 2. Processing starten und Status setzen
             $ticketModel->startProcessing();
             
-            // 3. IMMER neuen Branch erstellen
+            // 3. Repository initialisieren falls erstes Ticket
+            $this->ensureRepositoryInitialized($ticketDTO);
+            
+            // 4. IMMER neuen Branch erstellen
             $this->ensureCleanBranch($ticketDTO);
             
-            // 4. Knowledge-Base aktualisieren
+            // 5. Knowledge-Base aktualisieren
             $knowledgeBase = $this->knowledgeBase->updateKnowledgeBase($ticketDTO);
             
-            // 5. Erweiterten Prompt mit Projekt-Kontext erstellen
+            // 6. Erweiterten Prompt mit Projekt-Kontext erstellen
             $prompt = $this->buildEnhancedPrompt($ticketDTO, $knowledgeBase);
             
-            // 6. AI-Lösung generieren
+            // 7. AI-Lösung generieren
             $aiSolution = $this->aiService->generateSolution($prompt);
             
             if (!$aiSolution['success']) {
                 throw new Exception('AI-Lösungsgenerierung fehlgeschlagen: ' . $aiSolution['error']);
             }
             
-            // 7. Code-Änderungen ausführen
+            // 8. Code-Änderungen ausführen
             $executionResult = $this->aiService->executeCode($ticketDTO, $aiSolution);
             
             if (!$executionResult['success']) {
                 throw new Exception('Code-Ausführung fehlgeschlagen: ' . $executionResult['error']);
             }
             
-            // 8. Code-Review durchführen
+            // 9. Code-Review durchführen
             $reviewResult = $this->codeReview->performCodeReview($ticketDTO, $executionResult['changes']);
             
             if ($reviewResult['approval_status'] !== 'approved') {
@@ -152,6 +157,42 @@ class TicketProcessingService
     }
 
     /**
+     * Stellt sicher, dass das Repository für das erste Ticket initialisiert ist
+     */
+    private function ensureRepositoryInitialized(TicketDTO $ticket): void
+    {
+        $this->logger->info('Prüfe Repository-Initialisierung', [
+            'ticket_key' => $ticket->key,
+            'repository_url' => $ticket->repositoryUrl
+        ]);
+
+        // Prüfe ob Repository bereits initialisiert ist
+        if ($this->repoInit->isRepositoryInitialized($ticket)) {
+            $this->logger->debug('Repository bereits initialisiert', [
+                'ticket_key' => $ticket->key
+            ]);
+            return;
+        }
+
+        // Repository für erstes Ticket initialisieren
+        $this->logger->info('Initialisiere Repository für erstes Ticket', [
+            'ticket_key' => $ticket->key
+        ]);
+
+        $initResult = $this->repoInit->initializeRepository($ticket);
+        
+        if (!$initResult['success']) {
+            throw new Exception('Repository-Initialisierung fehlgeschlagen: ' . $initResult['error']);
+        }
+
+        $this->logger->info('Repository erfolgreich initialisiert', [
+            'ticket_key' => $ticket->key,
+            'workspace_path' => $initResult['workspace_path'],
+            'action' => $initResult['clone_result']['action'] ?? 'unknown'
+        ]);
+    }
+
+    /**
      * Stellt sicher, dass ein sauberer Branch existiert
      */
     private function ensureCleanBranch(TicketDTO $ticket): void
@@ -161,12 +202,12 @@ class TicketProcessingService
         ]);
 
         try {
-            $repoInfo = $ticket->getRepositoryInfo();
-            if (!$repoInfo) {
-                throw new Exception('Kein Repository für Ticket gefunden');
+            // Workspace-Pfad über Repository-Initialisierungs-Service holen
+            $repoPath = $this->repoInit->getWorkspacePath($ticket);
+            if (!$repoPath) {
+                throw new Exception('Kein Workspace-Pfad für Ticket gefunden');
             }
 
-            $repoPath = $this->config->get('repository.storage_path') . '/' . $repoInfo['full_name'];
             $branchName = $ticket->generateBranchName();
 
             // Sicherstellen, dass wir auf main/master sind
